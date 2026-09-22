@@ -81,11 +81,15 @@ type gateway struct {
 }
 
 func newGateway(dataDir string) (*gateway, error) {
-	cfg, err := loadConfig(dataDir)
+	masterKey, _, err := masterKeyFromEnv()
 	if err != nil {
 		return nil, err
 	}
-	store := &store{file: filepath.Join(dataDir, "config.json"), config: cfg}
+	cfg, err := loadConfig(dataDir, masterKey)
+	if err != nil {
+		return nil, err
+	}
+	store := &store{file: filepath.Join(dataDir, "config.json"), config: cfg, key: masterKey}
 	g := &gateway{
 		store:     store,
 		dataDir:   dataDir,

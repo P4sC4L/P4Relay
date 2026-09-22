@@ -87,8 +87,55 @@ func networkSettings(value any) (Network, error) {
 	return Network{LanEnabled: lan, Port: int(port)}, nil
 }
 
+// encryptConfigForDisk renvoie la config avec les clés API chiffrées (si clé maîtresse).
+func encryptConfigForDisk(key []byte, cfg *Config) (*Config, error) {
+	if key == nil {
+		return cfg, nil
+	}
+	data, _ := json.Marshal(cfg)
+	var c Config
+	if err := json.Unmarshal(data, &c); err != nil {
+		return nil, err
+	}
+	for i := range c.Providers {
+		enc, err := encryptValue(key, c.Providers[i].APIKey)
+		if err != nil {
+			return nil, err
+		}
+		c.Providers[i].APIKey = enc
+	}
+	return &c, nil
+}
+
+// decryptConfigFromDisk renvoie la config avec les clés API en clair (si clé maîtresse).
+func decryptConfigFromDisk(key []byte, cfg *Config) (*Config, error) {
+	if key == nil {
+		return cfg, nil
+	}
+	data, _ := json.Marshal(cfg)
+	var c Config
+	if err := json.Unmarshal(data, &c); err != nil {
+		return nil, err
+	}
+	for i := range c.Providers {
+		if c.Providers[i].APIKey == "" {
+			continue
+		}
+		if !isEncryptedValue(c.Providers[i].APIKey) {
+			continue // clé en clair (installation antérieure) : laissée telle quelle, migrée au premier enregistrement
+		}
+		plain, err := decryptValue(key, c.Providers[i].APIKey)
+		if err != nil {
+			return nil, fmt.Errorf("fournisseur « %s » : %v", c.Providers[i].Name, err)
+		}
+		c.Providers[i].APIKey = plain
+	}
+	return &c, nil
+}
+
 // loadConfig reads or creates data/config.json (mirrors createApp init).
-func loadConfig(dataDir string) (*Config, error) {
+// Les clés API lues du disque sont déchiffrées en mémoire (si clé maîtresse).
+func loadConfig(dataDir string, key []byte) (*Config, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("impossible de créer le dossier de données : %v", err)
 	}
@@ -141,14 +188,52 @@ func loadConfig(dataDir string) (*Config, error) {
 	if cfg.Aliases == nil {
 		cfg.Aliases = []Alias{}
 	}
-	return &cfg, nil
+	// Le fichier contient des clés chiffrées mais aucune clé maîtresse n'est
+	// fournie : impossible de déchiffrer, on refuse de démarrer.
+	if key == nil {
+		for i := range cfg.Providers {
+			if isEncryptedValue(cfg.Providers[i].APIKey) {
+				return nil, fmt.Errorf("la configuration contient des clés API chiffrées : définissez la variable d'environnement P4RELAY_MASTER_KEY avant de démarrer.")
+			}
+		}
+	}
+	plain, err := decryptConfigFromDisk(key, &cfg)
+	if err != nil {
+		return nil, err
+	}
+	// Migration : si une clé maîtresse est définie et que le fichier contenait
+	// encore des clés en clair (installation antérieure), on le réécrit chiffré.
+	if key != nil {
+		needMigrate := false
+		for i := range cfg.Providers {
+			if cfg.Providers[i].APIKey != "" && !isEncryptedValue(cfg.Providers[i].APIKey) {
+				needMigrate = true
+				break
+			}
+		}
+		if needMigrate {
+			disk, merr := encryptConfigForDisk(key, &cfg)
+			if merr != nil {
+				return nil, merr
+			}
+			data, _ := json.MarshalIndent(disk, "", "  ")
+			if werr := os.WriteFile(configFile, data, 0o600); werr != nil {
+				return nil, fmt.Errorf("impossible de chiffrer la configuration : %v", werr)
+			}
+		}
+	}
+	return plain, nil
 }
 
 // store provides serialized mutation of the config file (mirrors mutate()).
+// config contient les clés API en CLAIR en mémoire ; le fichier config.json
+// les stocke chiffrées en AES-GCM quand une clé maîtresse est fournie
+// (variable d'environnement P4RELAY_MASTER_KEY).
 type store struct {
 	mu       sync.Mutex
 	queue    chan struct{} // simple serialization
 	file     string
+	key      []byte // clé maîtresse AES-GCM (nil = mode non chiffré)
 	config   *Config
 	shutdown bool
 }
@@ -164,7 +249,14 @@ func (s *store) mutate(fn func(next *Config) (any, error)) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, _ := json.MarshalIndent(next, "", "  ")
+	toWrite := next
+	if s.key != nil {
+		toWrite, err = encryptConfigForDisk(s.key, next)
+		if err != nil {
+			return nil, apiError(500, "Impossible de chiffrer la clé API.")
+		}
+	}
+	data, _ := json.MarshalIndent(toWrite, "", "  ")
 	tmp := s.file + "." + randomID() + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return nil, apiError(500, "Opération impossible. Vérifiez la connexion et l’accès au fichier de configuration.")
