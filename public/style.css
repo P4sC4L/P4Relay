@@ -82,7 +82,8 @@ p{margin:6px 0 0; color:var(--muted); font-size:13px}
 .provider-grid{display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px}
 .provider-card{border:1px solid var(--line); border-radius:9px; padding:20px; background:var(--panel); min-width:0}
 .provider-top{display:flex; align-items:center; gap:11px; margin-bottom:18px}
-.provider-logo{width:37px; height:37px; display:flex; align-items:center; justify-content:center; background:#143457; border:1px solid #285981; border-radius:9px; font:20px var(--mono); color:var(--accent); flex-shrink:0}
+.provider-logo{width:37px; height:37px; display:flex; align-items:center; justify-content:center; background:#143457; border:1px solid #285981; border-radius:9px; flex-shrink:0}
+.provider-logo img{width:24px; height:24px; object-fit:contain}
 .provider-logo.anthropic{background:#302713; color:#fdb713; border-color:#675121}
 .provider-logo.openai{background:#0c3446; color:#60d5ff; border-color:#1c6481}
 .provider-logo.openrouter{background:#153154; color:#91c3ff; border-color:#1e5c9d}

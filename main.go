@@ -36,6 +36,10 @@ var (
 		"/logo.png":    {"logo.png", "image/png"},
 		"/icon.png":    {"icon.png", "image/png"},
 		"/favicon.svg": {"favicon.svg", "image/svg+xml"},
+		"/fournisseurs/openrouter.png": {"fournisseurs/openrouter.png", "image/png"},
+		"/fournisseurs/openai.png":    {"fournisseurs/openai.png", "image/png"},
+		"/fournisseurs/anthropic.png": {"fournisseurs/anthropic.png", "image/png"},
+		"/fournisseurs/custom.png":    {"fournisseurs/custom.png", "image/png"},
 	}
 	cspHeader = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 )
