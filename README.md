@@ -71,3 +71,35 @@ P4Relay.exe
   Tant que l'un des deux manque, les clés chiffrées restent illisibles.
 - Un changement de clé maîtresse rend les clés chiffrées illisibles (elles
   doivent alors être ressaisies).
+
+#### ⚠️ Le fichier `data/key` n'est pas un endroit sécurisé
+
+Le fichier `data/key` contient la clé maîtresse **en clair**. Il est pratique
+(rien à configurer), mais il repose entièrement sur le fait que personne n'y
+ait accès :
+
+- `data/key` et `data/config.json` se trouvent **dans le même dossier**.
+  Quiconque peut lire l'un peut lire l'autre (sauvegarde, copie, compte
+  local, malware).
+- Avec les deux fichiers, une clé API se déchiffre **instantanément** :
+  l'AES-256-GCM n'offre aucune protection quand la clé maîtresse est connue.
+  Il ne protège que `config.json` **seul** (brute-force 2²⁵⁶, irréaliste).
+
+**Recommandation : ne pas laisser la clé dans `data/`.** Stockez-la dans un
+endroit sécuritaire (coffre de mots de passe, disque séparé, autre machine)
+et injectez-la via la variable d'environnement à chaque démarrage :
+
+```
+# La clé est lue depuis l'environnement : elle n'est écrite nulle part sur disque
+set P4RELAY_MASTER_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+P4Relay.exe
+```
+
+Quand la variable est définie, le fichier `data/key` n'est ni lu ni créé.
+
+**Redémarrage / changement de machine :** il suffit de **redéfinir la même
+clé maîtresse** (même chaîne de 64 caractères hexadécimaux) via
+`P4RELAY_MASTER_KEY` — elle peut vivre ailleurs que sur la machine où tourne
+le serveur (coffre de mots de passe, autre ordinateur, presse-papiers
+chiffré). Avec la même clé, les `config.json` chiffrés restent déchiffrables
+partout ; avec une clé différente, ils sont illisibles.
