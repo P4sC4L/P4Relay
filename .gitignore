@@ -1,0 +1,13 @@
+# Binaire compilé
+P4Relay.exe
+*.exe
+*.exe~
+
+# Données locales (tokens, clés API) — JAMAIS à commettre
+data/
+
+# Journaux
+*.log
+
+# Sauvegardes locales
+BACKUP/
