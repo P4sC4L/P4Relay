@@ -10,6 +10,9 @@ Passerelle IA locale : expose un point d'entrée unique vers vos fournisseurs (O
 - **Réseau** : localhost par défaut, option LAN
 - **Sécurité** : token local, clés stockées localement et jamais renvoyées par l'interface
 
+## Demo
+![Screenshot de P4Relay sur la vue d'ensemble.](https://raw.githubusercontent.com/P4sC4L/P4Relay/main/public/screenshot/demo.png)
+
 ## Compilation
 
 ```
