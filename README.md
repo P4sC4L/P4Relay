@@ -49,18 +49,25 @@ Le fichier `data/config.json` (créé au premier lancement, **ignoré par git**)
 
 > ⚠️ `data/config.json` ne doit jamais être committé.
 
-### Chiffrement des clés API (optionnel)
+### Chiffrement des clés API
 
-Par défaut, les clés API sont stockées en clair dans `data/config.json`.
-Pour les chiffrer au repos (AES-GCM), définissez la variable d'environnement
-`P4RELAY_MASTER_KEY` avant le lancement : une chaîne de **64 caractères hexadécimaux**
-(32 octets), par exemple :
+Les clés API sont **chiffrées au repos par défaut** (AES-256-GCM) dans
+`data/config.json`. La clé maîtresse (32 octets) est résolue ainsi :
+
+1. variable d'environnement `P4RELAY_MASTER_KEY` (priorité, clé externe) ;
+2. sinon, le fichier `data/key`, **généré automatiquement** à la première
+   ouverture ;
+3. sinon, une clé est générée et écrite dans `data/key`.
 
 ```
+# Optionnel : fournir sa propre clé maîtresse (64 caractères hexadécimaux)
 set P4RELAY_MASTER_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 P4Relay.exe
 ```
 
-- Les clés déjà enregistrées en clair sont **chiffrées automatiquement** au premier démarrage avec la clé définie.
-- La clé maîtresse n'est stockée nulle part : sans elle, le serveur **refuse de démarrer** si la configuration contient des clés chiffrées.
-- Un changement de clé maîtresse rend les clés chiffrées illisibles (elles doivent alors être ressaisies).
+- Les clés déjà enregistrées en clair sont **chiffrées automatiquement** au
+  premier démarrage.
+- Le fichier `data/key` est séparé de `data/config.json` et ignoré par git.
+  Tant que l'un des deux manque, les clés chiffrées restent illisibles.
+- Un changement de clé maîtresse rend les clés chiffrées illisibles (elles
+  doivent alors être ressaisies).

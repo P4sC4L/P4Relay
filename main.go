@@ -81,7 +81,7 @@ type gateway struct {
 }
 
 func newGateway(dataDir string) (*gateway, error) {
-	masterKey, _, err := masterKeyFromEnv()
+	masterKey, err := loadMasterKey(dataDir)
 	if err != nil {
 		return nil, err
 	}

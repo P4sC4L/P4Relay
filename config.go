@@ -134,7 +134,7 @@ func decryptConfigFromDisk(key []byte, cfg *Config) (*Config, error) {
 }
 
 // loadConfig reads or creates data/config.json (mirrors createApp init).
-// Les clés API lues du disque sont déchiffrées en mémoire (si clé maîtresse).
+// Les clés API lues du disque sont déchiffrées en mémoire (clé maîtresse).
 func loadConfig(dataDir string, key []byte) (*Config, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("impossible de créer le dossier de données : %v", err)
@@ -188,38 +188,28 @@ func loadConfig(dataDir string, key []byte) (*Config, error) {
 	if cfg.Aliases == nil {
 		cfg.Aliases = []Alias{}
 	}
-	// Le fichier contient des clés chiffrées mais aucune clé maîtresse n'est
-	// fournie : impossible de déchiffrer, on refuse de démarrer.
-	if key == nil {
-		for i := range cfg.Providers {
-			if isEncryptedValue(cfg.Providers[i].APIKey) {
-				return nil, fmt.Errorf("la configuration contient des clés API chiffrées : définissez la variable d'environnement P4RELAY_MASTER_KEY avant de démarrer.")
-			}
-		}
-	}
 	plain, err := decryptConfigFromDisk(key, &cfg)
 	if err != nil {
 		return nil, err
 	}
-	// Migration : si une clé maîtresse est définie et que le fichier contenait
-	// encore des clés en clair (installation antérieure), on le réécrit chiffré.
-	if key != nil {
-		needMigrate := false
-		for i := range cfg.Providers {
-			if cfg.Providers[i].APIKey != "" && !isEncryptedValue(cfg.Providers[i].APIKey) {
-				needMigrate = true
-				break
-			}
+	// Migration : si le fichier contenait encore des clés en clair
+	// (installation antérieure), on le réécrit chiffré. Les valeurs vides
+	// ne sont jamais chiffrées (un fournisseur sans clé garde "apiKey": "").
+	needMigrate := false
+	for i := range cfg.Providers {
+		if cfg.Providers[i].APIKey != "" && !isEncryptedValue(cfg.Providers[i].APIKey) {
+			needMigrate = true
+			break
 		}
-		if needMigrate {
-			disk, merr := encryptConfigForDisk(key, &cfg)
-			if merr != nil {
-				return nil, merr
-			}
-			data, _ := json.MarshalIndent(disk, "", "  ")
-			if werr := os.WriteFile(configFile, data, 0o600); werr != nil {
-				return nil, fmt.Errorf("impossible de chiffrer la configuration : %v", werr)
-			}
+	}
+	if needMigrate {
+		disk, merr := encryptConfigForDisk(key, &cfg)
+		if merr != nil {
+			return nil, merr
+		}
+		data, _ := json.MarshalIndent(disk, "", "  ")
+		if werr := os.WriteFile(configFile, data, 0o600); werr != nil {
+			return nil, fmt.Errorf("impossible de chiffrer la configuration : %v", werr)
 		}
 	}
 	return plain, nil
@@ -227,13 +217,13 @@ func loadConfig(dataDir string, key []byte) (*Config, error) {
 
 // store provides serialized mutation of the config file (mirrors mutate()).
 // config contient les clés API en CLAIR en mémoire ; le fichier config.json
-// les stocke chiffrées en AES-GCM quand une clé maîtresse est fournie
-// (variable d'environnement P4RELAY_MASTER_KEY).
+// les stocke chiffrées en AES-GCM avec la clé maîtresse (data/key ou variable
+// d'environnement P4RELAY_MASTER_KEY).
 type store struct {
 	mu       sync.Mutex
 	queue    chan struct{} // simple serialization
 	file     string
-	key      []byte // clé maîtresse AES-GCM (nil = mode non chiffré)
+	key      []byte // clé maîtresse AES-GCM
 	config   *Config
 	shutdown bool
 }
