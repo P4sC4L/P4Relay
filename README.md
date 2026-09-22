@@ -54,52 +54,33 @@ Le fichier `data/config.json` (créé au premier lancement, **ignoré par git**)
 Les clés API sont **chiffrées au repos par défaut** (AES-256-GCM) dans
 `data/config.json`. La clé maîtresse (32 octets) est résolue ainsi :
 
-1. variable d'environnement `P4RELAY_MASTER_KEY` (priorité, clé externe) ;
+1. variable d'environnement `P4RELAY_MASTER_KEY` ;
 2. sinon, le fichier `data/key`, **généré automatiquement** à la première
-   ouverture ;
-3. sinon, une clé est générée et écrite dans `data/key`.
+   ouverture.
 
-```
-# Optionnel : fournir sa propre clé maîtresse (64 caractères hexadécimaux)
-set P4RELAY_MASTER_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-P4Relay.exe
-```
-
-- Les clés déjà enregistrées en clair sont **chiffrées automatiquement** au
-  premier démarrage.
-- Le fichier `data/key` est séparé de `data/config.json` et ignoré par git.
-  Tant que l'un des deux manque, les clés chiffrées restent illisibles.
-- Un changement de clé maîtresse rend les clés chiffrées illisibles (elles
-  doivent alors être ressaisies).
+Les clés déjà enregistrées en clair sont **chiffrées automatiquement** au
+premier démarrage. Le fichier `data/key` est ignoré par git.
 
 #### ⚠️ Le fichier `data/key` n'est pas un endroit sécurisé
 
-Le fichier `data/key` contient la clé maîtresse **en clair**. Il est pratique
-(rien à configurer), mais il repose entièrement sur le fait que personne n'y
-ait accès :
+`data/key` contient la clé maîtresse **en clair**, dans le même dossier que
+`config.json` : il suffit de copier le dossier pour avoir les deux (sauvegarde,
+compte local, malware), et avec les deux fichiers, une clé API se déchiffre
+**instantanément**. Le chiffrement ne protège que `config.json` **seul**
+(brute-force 2²⁵⁶, irréaliste).
 
-- `data/key` et `data/config.json` se trouvent **dans le même dossier**.
-  Quiconque peut lire l'un peut lire l'autre (sauvegarde, copie, compte
-  local, malware).
-- Avec les deux fichiers, une clé API se déchiffre **instantanément** :
-  l'AES-256-GCM n'offre aucune protection quand la clé maîtresse est connue.
-  Il ne protège que `config.json` **seul** (brute-force 2²⁵⁶, irréaliste).
-
-**Recommandation : ne pas laisser la clé dans `data/`.** Stockez-la dans un
-endroit sécuritaire (coffre de mots de passe, disque séparé, autre machine)
-et injectez-la via la variable d'environnement à chaque démarrage :
+**Recommandation : stocker la clé ailleurs** (coffre de mots de passe, autre
+machine) et l'injecter via la variable d'environnement, qui n'est jamais
+écrite sur disque :
 
 ```
-# La clé est lue depuis l'environnement : elle n'est écrite nulle part sur disque
+# 64 caractères hexadécimaux — la clé reste hors machine
 set P4RELAY_MASTER_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 P4Relay.exe
 ```
 
-Quand la variable est définie, le fichier `data/key` n'est ni lu ni créé.
-
-**Redémarrage / changement de machine :** il suffit de **redéfinir la même
-clé maîtresse** (même chaîne de 64 caractères hexadécimaux) via
-`P4RELAY_MASTER_KEY` — elle peut vivre ailleurs que sur la machine où tourne
-le serveur (coffre de mots de passe, autre ordinateur, presse-papiers
-chiffré). Avec la même clé, les `config.json` chiffrés restent déchiffrables
-partout ; avec une clé différente, ils sont illisibles.
+Quand la variable est définie, `data/key` n'est ni lu ni créé. Pour un
+**redémarrage ou un changement de machine**, il suffit de redéfinir **la même
+clé** : les `config.json` chiffrés restent déchiffrables partout où elle est
+connue, et illisibles avec une clé différente (les clés doivent alors être
+ressaisies).
