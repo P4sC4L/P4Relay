@@ -35,7 +35,6 @@ var (
 		"/style.css":   {"style.css", "text/css"},
 		"/logo.png":    {"logo.png", "image/png"},
 		"/icon.png":    {"icon.png", "image/png"},
-		"/favicon.svg": {"favicon.svg", "image/svg+xml"},
 		"/fournisseurs/openrouter.png": {"fournisseurs/openrouter.png", "image/png"},
 		"/fournisseurs/openai.png":    {"fournisseurs/openai.png", "image/png"},
 		"/fournisseurs/anthropic.png": {"fournisseurs/anthropic.png", "image/png"},
