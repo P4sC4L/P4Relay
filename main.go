@@ -33,6 +33,7 @@ var (
 		"/app.js":      {"app.js", "text/javascript"},
 		"/style.css":   {"style.css", "text/css"},
 		"/logo.png":    {"logo.png", "image/png"},
+		"/icon.png":    {"icon.png", "image/png"},
 		"/favicon.svg": {"favicon.svg", "image/svg+xml"},
 	}
 	cspHeader = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
