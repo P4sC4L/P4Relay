@@ -56,6 +56,10 @@ p{margin:6px 0 0; color:var(--muted); font-size:13px}
 .button.secondary:hover{border-color:#00aeef}
 .button.ghost{background:transparent; color:var(--muted); border-color:var(--line)}
 .button.danger{color:var(--danger); background:transparent; border-color:#503636}
+.button.danger:hover:not(:disabled){background:#2a1c1c; border-color:#7a4a4a}
+.button.danger:disabled{cursor:default; opacity:.5; background:transparent; border-color:#503636}
+.log-pagination{display:flex; align-items:center; justify-content:center; gap:16px; flex-wrap:wrap; margin-top:18px}
+.log-pagination span{font-size:11px; color:var(--muted)}
 .button.small{padding:7px 11px; font-size:11px}
 .text-button{border:0; color:var(--accent); background:none; font-size:12px; padding:5px 0}
 .actions{display:flex; align-items:center; gap:8px; flex-wrap:wrap}

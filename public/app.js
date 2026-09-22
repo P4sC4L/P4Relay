@@ -2,7 +2,7 @@ const $ = (selector, scope = document) => scope.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 let state, currentPage = '', toastTimer, editKind, editId, testController;
 let lifecycle = 'running';
-let clearingLogs = false, refreshVersion = 0;
+let clearingLogs = false, refreshVersion = 0, activityPage = 1;
 const titles = { overview: 'Vue d’ensemble', providers: 'Fournisseurs', aliases: 'Alias de modèles', playground: 'Terrain d’essai', activity: 'Activité', settings: 'Connexion & paramètres' };
 const defaults = { openrouter: ['OpenRouter', 'https://openrouter.ai/api/v1'], openai: ['OpenAI', 'https://api.openai.com/v1'], anthropic: ['Claude · Anthropic', 'https://api.anthropic.com/v1'], custom: ['Fournisseur personnalisé', 'http://127.0.0.1:11434/v1'] };
 async function api(url, method = 'GET', data) {
@@ -27,6 +27,9 @@ function aliasTable(aliases) {
     const p = state.providers.find(p => p.id === a.providerId); const available = a.enabled && p && ready(p);
     return `<tr><td><span class="row-name"><span class="row-icon">⇄</span><span class="mono">${esc(a.name)}</span></span></td><td class="mono"><span class="arrow">→</span>${esc(a.targetModel)}</td><td>${esc(providerName(a.providerId))}</td><td><span class="badge ${available ? '' : 'pending'}">${!a.enabled ? 'Désactivé' : available ? 'Actif' : 'À configurer'}</span></td><td><div class="actions"><button class="button ghost small" data-action="edit-alias" data-id="${esc(a.id)}">Modifier</button><button class="button ghost small" data-action="delete-alias" data-id="${esc(a.id)}" aria-label="Supprimer ${esc(a.name)}">×</button></div></td></tr>`;
   }).join('')}</tbody></table></div>`;
+}
+function totalLogPages() {
+  return Math.max(1, Math.ceil((state.logTotal || 0) / 100));
 }
 function activityTable(logs) {
   if (!logs.length) return empty('≋', 'Votre prochaine requête apparaîtra ici', 'Retrouvez le routage, le temps de réponse et le statut de chaque appel. Le contenu des conversations n’est pas enregistré.');
@@ -88,7 +91,7 @@ function render() {
   $('#breadcrumb').textContent = titles[page];
   $('#nav-providers').textContent = state.providers.length;
   $('#nav-aliases').textContent = state.aliases.length;
-  const views = { overview, providers, aliases, playground, settings, activity: () => heading('JOURNAL LOCAL', 'Suivez chaque requête.', 'Les 100 derniers appels de la session. Aucun message ni réponse n’est conservé dans ce journal.', `<div class="actions"><button class="button secondary" data-action="refresh">↻ Actualiser</button><button class="button danger" data-action="clear-logs" ${clearingLogs || !state.logs.length ? 'disabled' : ''}>${clearingLogs ? 'Effacement…' : 'Effacer le journal'}</button></div>`) + `<section class="wide-card">${activityTable(state.logs)}</section>` };
+  const views = { overview, providers, aliases, playground, settings, activity: () => { const pages = totalLogPages(); const page = activityPage; return heading('JOURNAL LOCAL', 'Suivez chaque requête.', 'Derniers appels reçus par la passerelle, du plus récent au plus ancien. Aucun message ni réponse n’est conservé dans ce journal.', `<div class="actions"><button class="button secondary" data-action="refresh">↻ Actualiser</button><button class="button danger" data-action="clear-logs" ${clearingLogs || !state.logs.length ? 'disabled' : ''}>${clearingLogs ? 'Effacement…' : 'Effacer le journal'}</button></div>`) + `<section class="wide-card">${activityTable(state.logs)}${pages > 1 ? `<div class="log-pagination"><button class="button secondary small" data-action="log-page" data-id="${page - 1}"${page <= 1 ? ' disabled' : ''}>← Précédente</button><span>Page ${page} / ${pages} · ${state.logTotal || 0} entrées</span><button class="button secondary small" data-action="log-page" data-id="${page + 1}"${page >= pages ? ' disabled' : ''}>Suivante →</button></div>` : ''}</section>`; } };
   $('#main').innerHTML = views[page]();
   if (page === 'playground') updateTestRoute();
 }
@@ -99,6 +102,17 @@ async function refresh(redraw = true) {
     const latest = await api('/api/state');
     if (lifecycle !== 'running' || version !== refreshVersion) return;
     state = latest;
+    if (currentPage === 'activity') {
+      const result = await api(`/api/logs?page=${activityPage}`);
+      state.logs = result.logs || [];
+      state.logTotal = result.total || 0;
+      if (activityPage > totalLogPages() && totalLogPages() >= 1) {
+        activityPage = totalLogPages();
+        const retry = await api(`/api/logs?page=${activityPage}`);
+        state.logs = retry.logs || [];
+        state.logTotal = retry.total || 0;
+      }
+    }
     $('#server-status').innerHTML = '<i></i>Serveur en ligne'; $('#server-status').classList.remove('offline');
     if (redraw) render();
   } catch (error) {
@@ -117,6 +131,8 @@ async function clearLogs() {
     await api('/api/logs', 'DELETE');
     if (lifecycle !== 'running') return;
     state.logs = [];
+    state.logTotal = 0;
+    activityPage = 1;
     toast('Journal effacé.');
   } finally {
     clearingLogs = false;
@@ -209,6 +225,13 @@ document.addEventListener('click', async event => {
     if (action === 'show-token') $('#local-token').type = $('#local-token').type === 'password' ? 'text' : 'password';
     if (action === 'refresh') await refresh();
     if (action === 'clear-logs') await clearLogs();
+  if (action === 'log-page' && !clearingLogs) {
+    const target = parseInt(id, 10);
+    if (target >= 1 && target <= totalLogPages() && target !== activityPage) {
+      activityPage = target;
+      await refresh();
+    }
+  }
     if (action === 'rotate-token' && confirm('Renouveler la clé locale ? Les applications devront utiliser la nouvelle clé.')) { await api('/api/token/rotate', 'POST', {}); await refresh(); toast('Nouvelle clé locale créée.'); }
     if (action === 'delete-alias' && confirm('Supprimer cet alias ?')) { await api(`/api/aliases/${encodeURIComponent(id)}`, 'DELETE'); await refresh(); toast('Alias supprimé.'); }
     if (action === 'delete-provider' && confirm('Supprimer ce fournisseur et sa clé enregistrée ?')) { await api(`/api/providers/${encodeURIComponent(id)}`, 'DELETE'); closeEditor(); await refresh(); toast('Fournisseur supprimé.'); }

@@ -18,6 +18,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -40,8 +41,9 @@ var (
 )
 
 const (
-	version   = "1.1.0"
-	timeoutMs = 180 * time.Second
+	version         = "1.1.0"
+	timeoutMs       = 180 * time.Second
+	journalPageSize = 100
 )
 
 type logEntry struct {
@@ -58,8 +60,10 @@ type logEntry struct {
 
 type gateway struct {
 	store        *store
+	dataDir      string
 	logsMu       sync.Mutex
 	logs         []logEntry
+	logTotal     int
 	statsMu      sync.Mutex
 	requests     int
 	successful   int
@@ -84,6 +88,7 @@ func newGateway(dataDir string) (*gateway, error) {
 	store := &store{file: filepath.Join(dataDir, "config.json"), config: cfg}
 	g := &gateway{
 		store:     store,
+		dataDir:   dataDir,
 		logs:      []logEntry{},
 		startedAt: time.Now().UnixMilli(),
 		client:    &http.Client{CheckRedirect: func(r *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }},
@@ -108,13 +113,52 @@ func newGateway(dataDir string) (*gateway, error) {
 	return g, nil
 }
 
+func (g *gateway) journalPath() string {
+	return filepath.Join(g.dataDir, "journal.log")
+}
+
+func (g *gateway) loadJournal() {
+	data, err := os.ReadFile(g.journalPath())
+	if err != nil || len(data) == 0 {
+		return
+	}
+	if len(data) >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF {
+		data = data[3:]
+	}
+	var entries []logEntry
+	if json.Unmarshal(data, &entries) != nil {
+		return
+	}
+	total := len(entries)
+	g.logsMu.Lock()
+	g.logs = entries
+	g.logTotal = total
+	g.logsMu.Unlock()
+	log.Printf("journal: %d entrées rechargées depuis %s", total, g.journalPath())
+}
+
+func (g *gateway) saveJournal() {
+	g.logsMu.Lock()
+	entries := make([]logEntry, len(g.logs))
+	copy(entries, g.logs)
+	total := g.logTotal
+	g.logsMu.Unlock()
+	data, err := json.Marshal(entries)
+	if err != nil {
+		return
+	}
+	if err := os.WriteFile(g.journalPath(), data, 0o644); err != nil {
+		log.Printf("journal: %v", err)
+	}
+	log.Printf("journal: %d entrées conservées dans %s", total, g.journalPath())
+}
+
 func (g *gateway) record(entry logEntry) {
 	g.logsMu.Lock()
 	g.logs = append([]logEntry{entry}, g.logs...)
-	if len(g.logs) > 100 {
-		g.logs = g.logs[:100]
-	}
+	g.logTotal++
 	g.logsMu.Unlock()
+	g.saveJournal()
 	g.statsMu.Lock()
 	g.requests++
 	g.totalMs += entry.DurationMs
@@ -129,7 +173,9 @@ func (g *gateway) record(entry logEntry) {
 func (g *gateway) clearLogs() {
 	g.logsMu.Lock()
 	g.logs = []logEntry{}
+	g.logTotal = 0
 	g.logsMu.Unlock()
+	os.Remove(g.journalPath())
 }
 
 func (g *gateway) redact(value string) string {
@@ -802,8 +848,12 @@ func (g *gateway) handleAdmin(w http.ResponseWriter, r *http.Request, route stri
 	case route == "/api/state" && r.Method == "GET":
 		cfg := g.store.get()
 		g.logsMu.Lock()
-		logsCopy := make([]logEntry, len(g.logs))
-		copy(logsCopy, g.logs)
+		start := 0
+		if len(g.logs) > journalPageSize {
+			start = len(g.logs) - journalPageSize
+		}
+		logsCopy := make([]logEntry, len(g.logs)-start)
+		copy(logsCopy, g.logs[start:])
 		g.logsMu.Unlock()
 		g.statsMu.Lock()
 		stats := map[string]any{"requests": g.requests, "successful": g.successful, "failed": g.failed, "totalMs": g.totalMs}
@@ -848,6 +898,20 @@ func (g *gateway) handleAdmin(w http.ResponseWriter, r *http.Request, route stri
 			panic(err)
 		}
 		writeJSON(w, 200, map[string]any{"ok": true})
+	case route == "/api/logs" && r.Method == "GET":
+		page := 1
+		if p, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && p > 0 {
+			page = p
+		}
+		g.logsMu.Lock()
+		total := g.logTotal
+		start := (page - 1) * journalPageSize
+		var slice []logEntry
+		if start < len(g.logs) {
+			slice = g.logs[start:]
+		}
+		g.logsMu.Unlock()
+		writeJSON(w, 200, map[string]any{"logs": slice, "total": total, "page": page, "pageSize": journalPageSize})
 	case route == "/api/logs" && r.Method == "DELETE":
 		g.clearLogs()
 		writeJSON(w, 200, map[string]any{"ok": true})
@@ -1217,6 +1281,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	g.loadJournal()
 	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", g.host, g.port))
 	if err != nil {
 		if strings.Contains(err.Error(), "address already in use") {
