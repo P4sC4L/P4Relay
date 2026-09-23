@@ -204,7 +204,7 @@ func main() {
 		}),
 	}
 	g.server = server
-	ctx, stop := context.WithCancel(context.Background())
+	_, stop := context.WithCancel(context.Background())
 	g.stopUpstream = stop
 	go func() {
 		sig := make(chan os.Signal, 1)
@@ -221,5 +221,4 @@ func main() {
 	if err := server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
-	_ = ctx
 }

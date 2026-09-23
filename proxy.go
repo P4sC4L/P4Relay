@@ -345,11 +345,9 @@ func (g *gateway) doProxy(w http.ResponseWriter, r *http.Request, ctx context.Co
 		if !strings.Contains(ct, "text/event-stream") {
 			return apiError(502, "Le fournisseur n’a pas renvoyé de flux SSE.", "upstream_error")
 		}
-		flusher, ok := w.(http.Flusher)
-		if !ok {
+		if _, ok := w.(http.Flusher); !ok {
 			return apiError(500, "Streaming non disponible.")
 		}
-		_ = flusher
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache, no-transform")
 		w.Header().Set("X-Accel-Buffering", "no")

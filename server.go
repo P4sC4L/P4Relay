@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-//go:embed public
+//go:embed public/index.html public/app.js public/style.css public/icon.png public/logo.png public/fournisseurs
 var publicFS embed.FS
 
 var (

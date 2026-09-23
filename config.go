@@ -220,20 +220,15 @@ func loadConfig(dataDir string, key []byte) (*Config, error) {
 // les stocke chiffrées en AES-GCM avec la clé maîtresse (data/key ou variable
 // d'environnement P4RELAY_MASTER_KEY).
 type store struct {
-	mu       sync.Mutex
-	queue    chan struct{} // simple serialization
-	file     string
-	key      []byte // clé maîtresse AES-GCM
-	config   *Config
-	shutdown bool
+	mu     sync.Mutex
+	file   string
+	key    []byte // clé maîtresse AES-GCM
+	config *Config
 }
 
 func (s *store) mutate(fn func(next *Config) (any, error)) (any, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.shutdown {
-		return nil, apiError(503, "La passerelle est en cours de fermeture.")
-	}
 	next := s.clone()
 	result, err := fn(next)
 	if err != nil {
@@ -306,8 +301,6 @@ func loopback(address string) bool {
 }
 
 // baseUrl mirrors baseUrl(): https required except localhost http, no credentials/query/hash.
-var controlRe = regexp.MustCompile(`[\x00-\x1f\x7f]`)
-
 func validateBaseURL(value any) (string, error) {
 	raw, err := required(value, "URL de base", 2000)
 	if err != nil {

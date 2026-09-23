@@ -147,18 +147,6 @@ func asInt(v any) (int64, bool) {
 	return int64(f), true
 }
 
-// asBool reports whether v is a JSON boolean.
-func asBool(v any) (bool, bool) {
-	b, ok := v.(bool)
-	return b, ok
-}
-
-// asString reports whether v is a JSON string.
-func asString(v any) (string, bool) {
-	s, ok := v.(string)
-	return s, ok
-}
-
 // asArray reports whether v is a JSON array.
 func asArray(v any) ([]any, bool) {
 	a, ok := v.([]any)

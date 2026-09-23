@@ -1,4 +1,4 @@
-:root{color-scheme:dark; --bg:#090f19; --panel:#111d2e; --panel2:#16283d; --line:#24364b; --text:#edf5ff; --muted:#99abc2; --accent:#00aeef; --brand-blue:#1e5c9d; --brand-yellow:#fdb713; --accent-dim:#102f4e; --danger:#f2a5a5; --mono:Consolas,'Courier New',monospace}
+:root{color-scheme:dark; --bg:#090f19; --panel:#111d2e; --panel2:#16283d; --line:#24364b; --text:#edf5ff; --muted:#99abc2; --accent:#00aeef; --brand-yellow:#fdb713; --accent-dim:#102f4e; --danger:#f2a5a5; --mono:Consolas,'Courier New',monospace}
 *{box-sizing:border-box}
 body{margin:0; background:var(--bg); color:var(--text); font:14px/1.55 'Segoe UI',Arial,sans-serif}
 button,input,select,textarea{font:inherit}
@@ -169,11 +169,9 @@ dialog::backdrop{background:#050b15d9; backdrop-filter:blur(4px)}
 .notice{border-left:2px solid #fdb713; padding-left:12px; font-size:12px; color:#9eb8d7; margin-top:20px}
 .inline-status{min-height:20px; font-size:11px; color:#86ccef}
 .provider-editor-note{font-size:11px; line-height:1.6}
-.toggle-label{display:flex; gap:8px; align-items:center}
 details{margin-top:18px}
 summary{color:#a1c0e2; font-size:11px; cursor:pointer}
 details pre{font:10px/1.6 var(--mono); white-space:pre-wrap; overflow-wrap:anywhere; color:#a0c7e8; max-height:250px; overflow:auto}
-.nowrap{white-space:nowrap}
 @media(min-width:1600px){main{padding-top:45px}
 .endpoint-card{padding:32px}
 .provider-card{padding:25px}
