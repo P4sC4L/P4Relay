@@ -1,14 +1,16 @@
-package main
+package anthropic
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"regexp"
 	"strings"
+
+	"p4relay/internal/p4relay/config"
+	apperr "p4relay/internal/p4relay/errors"
 )
 
 var (
@@ -17,11 +19,11 @@ var (
 )
 
 func invalid(message string) error {
-	return apiError(400, message)
+	return apperr.New(400, message)
 }
 
 func upstreamInvalid(message string) error {
-	return apiError(502, message, "upstream_error")
+	return apperr.New(502, message, "upstream_error")
 }
 
 func textOf(value any, name string) (string, error) {
@@ -44,8 +46,8 @@ func blocks(content any) ([]any, error) {
 }
 
 // validateMessages mirrors validateMessages(input, countOnly)
-func validateMessages(input map[string]any, countOnly bool) error {
-	msgs, ok := asArray(input["messages"])
+func ValidateMessages(input map[string]any, countOnly bool) error {
+	msgs, ok := apperr.AsArray(input["messages"])
 	if !ok || len(msgs) == 0 {
 		return invalid("messages doit être une liste non vide.")
 	}
@@ -73,7 +75,7 @@ func validateMessages(input map[string]any, countOnly bool) error {
 		}
 	}
 	if !countOnly {
-		mt, ok := asInt(input["max_tokens"])
+		mt, ok := apperr.AsInt(input["max_tokens"])
 		if !ok || mt < 0 {
 			return invalid("max_tokens doit être un entier positif ou nul.")
 		}
@@ -171,7 +173,7 @@ func compact(parts []any) any {
 }
 
 // toChatRequest mirrors toChatRequest(input, targetModel, kind)
-func toChatRequest(input map[string]any, targetModel, kind string) (map[string]any, error) {
+func ToChatRequest(input map[string]any, targetModel, kind string) (map[string]any, error) {
 	messages := []any{}
 	if sys, present := input["system"]; present {
 		system, err := blocks(sys)
@@ -196,7 +198,7 @@ func toChatRequest(input map[string]any, targetModel, kind string) (map[string]a
 		messages = append(messages, map[string]any{"role": "system", "content": strings.Join(texts, "\n")})
 	}
 
-	msgs, _ := asArray(input["messages"])
+	msgs, _ := apperr.AsArray(input["messages"])
 	for _, m := range msgs {
 		obj := m.(map[string]any)
 		content, err := blocks(obj["content"])
@@ -232,15 +234,15 @@ func toChatRequest(input map[string]any, targetModel, kind string) (map[string]a
 				case "tool_use":
 					id, _ := bobj["id"].(string)
 					name, _ := bobj["name"].(string)
-					if id == "" || name == "" || !isPlainObject(bobj["input"]) {
+					if id == "" || name == "" || !apperr.IsPlainObject(bobj["input"]) {
 						return nil, invalid("Bloc tool_use invalide : id, name et input objet requis.")
 					}
 					calls = append(calls, map[string]any{
-						"id":     id,
-						"type":   "function",
+						"id":   id,
+						"type": "function",
 						"function": map[string]any{
 							"name":      name,
-							"arguments": mustJSON(bobj["input"]),
+							"arguments": MustJSON(bobj["input"]),
 						},
 					})
 				case "thinking", "redacted_thinking":
@@ -287,7 +289,7 @@ func toChatRequest(input map[string]any, targetModel, kind string) (map[string]a
 				var toolImages []any
 				var texts []string
 				for _, p := range parts {
-				 pObj, _ := p.(map[string]any)
+					pObj, _ := p.(map[string]any)
 					if pObj == nil {
 						continue
 					}
@@ -325,7 +327,7 @@ func toChatRequest(input map[string]any, targetModel, kind string) (map[string]a
 	stream, _ := input["stream"].(bool)
 	outgoing := map[string]any{"model": targetModel, "messages": messages, "stream": stream}
 	if mt, present := input["max_tokens"]; present {
-		n, _ := asInt(mt)
+		n, _ := apperr.AsInt(mt)
 		if n == 0 {
 			return nil, invalid("Le préremplissage de cache (max_tokens=0) nécessite un fournisseur Anthropic.")
 		}
@@ -341,12 +343,12 @@ func toChatRequest(input map[string]any, targetModel, kind string) (map[string]a
 		}
 	}
 	if stop, present := input["stop_sequences"]; present {
-		if arr, ok := asArray(stop); ok && len(arr) > 0 {
+		if arr, ok := apperr.AsArray(stop); ok && len(arr) > 0 {
 			outgoing["stop"] = arr
 		}
 	}
 	if tools, present := input["tools"]; present {
-		arr, ok := asArray(tools)
+		arr, ok := apperr.AsArray(tools)
 		if !ok {
 			return nil, invalid("tools doit être une liste.")
 		}
@@ -360,7 +362,7 @@ func toChatRequest(input map[string]any, targetModel, kind string) (map[string]a
 				return nil, invalid("Seuls les outils clients avec name et input_schema sont traduisibles. Les outils serveur Anthropic nécessitent un fournisseur Anthropic.")
 			}
 			name, ok := tool["name"].(string)
-			if !ok || name == "" || !isPlainObject(tool["input_schema"]) {
+			if !ok || name == "" || !apperr.IsPlainObject(tool["input_schema"]) {
 				return nil, invalid("Seuls les outils clients avec name et input_schema sont traduisibles. Les outils serveur Anthropic nécessitent un fournisseur Anthropic.")
 			}
 			fn := map[string]any{"name": name, "parameters": tool["input_schema"]}
@@ -412,7 +414,7 @@ func toChatRequest(input map[string]any, targetModel, kind string) (map[string]a
 	}
 	if format != nil {
 		f, _ := format.(map[string]any)
-		if f == nil || f["type"] != "json_schema" || !isPlainObject(f["schema"]) {
+		if f == nil || f["type"] != "json_schema" || !apperr.IsPlainObject(f["schema"]) {
 			return nil, invalid("Format de sortie non pris en charge.")
 		}
 		outgoing["response_format"] = map[string]any{
@@ -426,7 +428,7 @@ func toChatRequest(input map[string]any, targetModel, kind string) (map[string]a
 	}
 	if cm, present := input["context_management"]; present {
 		cmObj, _ := cm.(map[string]any)
-		edits, _ := asArray(cmObj["edits"])
+		edits, _ := apperr.AsArray(cmObj["edits"])
 		for _, e := range edits {
 			eObj, _ := e.(map[string]any)
 			typ, _ := eObj["type"].(string)
@@ -456,7 +458,7 @@ func mustBlocks(content any) []any {
 	return b
 }
 
-func mustJSON(v any) string {
+func MustJSON(v any) string {
 	data, _ := json.Marshal(v)
 	return string(data)
 }
@@ -465,16 +467,16 @@ func mustJSON(v any) string {
 func usageFromChat(usage map[string]any) map[string]any {
 	cached := int64(0)
 	if details, ok := usage["prompt_tokens_details"].(map[string]any); ok {
-		if c, ok := asInt(details["cached_tokens"]); ok {
+		if c, ok := apperr.AsInt(details["cached_tokens"]); ok {
 			cached = c
 		}
 	}
 	prompt := int64(0)
-	if p, ok := asInt(usage["prompt_tokens"]); ok {
+	if p, ok := apperr.AsInt(usage["prompt_tokens"]); ok {
 		prompt = p
 	}
 	completion := int64(0)
-	if c, ok := asInt(usage["completion_tokens"]); ok {
+	if c, ok := apperr.AsInt(usage["completion_tokens"]); ok {
 		completion = c
 	}
 	input := prompt - cached
@@ -482,10 +484,10 @@ func usageFromChat(usage map[string]any) map[string]any {
 		input = 0
 	}
 	return map[string]any{
-		"input_tokens":                 input,
-		"output_tokens":                completion,
-		"cache_creation_input_tokens":  0,
-		"cache_read_input_tokens":      cached,
+		"input_tokens":                input,
+		"output_tokens":               completion,
+		"cache_creation_input_tokens": 0,
+		"cache_read_input_tokens":     cached,
 	}
 }
 
@@ -520,15 +522,15 @@ func toolBlock(call map[string]any) (map[string]any, error) {
 	if err := json.Unmarshal([]byte(args), &input); err != nil {
 		return nil, upstreamInvalid("Arguments JSON invalides dans l’appel d’outil du fournisseur.")
 	}
-	if !isPlainObject(input) {
+	if !apperr.IsPlainObject(input) {
 		return nil, upstreamInvalid("Les arguments d’un outil doivent être un objet JSON.")
 	}
 	return map[string]any{"type": "tool_use", "id": id, "name": name, "input": input}, nil
 }
 
 // fromChatResponse mirrors fromChatResponse(result, model)
-func fromChatResponse(result map[string]any, model string) (map[string]any, error) {
-	choices, _ := asArray(result["choices"])
+func FromChatResponse(result map[string]any, model string) (map[string]any, error) {
+	choices, _ := apperr.AsArray(result["choices"])
 	if len(choices) == 0 {
 		return nil, upstreamInvalid("Réponse Chat Completions sans message.")
 	}
@@ -548,7 +550,7 @@ func fromChatResponse(result map[string]any, model string) (map[string]any, erro
 		content = append(content, map[string]any{"type": "text", "text": r})
 	}
 	var calls []any
-	if tc, ok := asArray(message["tool_calls"]); ok {
+	if tc, ok := apperr.AsArray(message["tool_calls"]); ok {
 		for _, t := range tc {
 			tObj, _ := t.(map[string]any)
 			block, err := toolBlock(tObj)
@@ -565,7 +567,7 @@ func fromChatResponse(result map[string]any, model string) (map[string]any, erro
 	}
 	finish, _ := choice["finish_reason"].(string)
 	return map[string]any{
-		"id":            "msg_" + randomID(),
+		"id":            "msg_" + config.RandomID(),
 		"type":          "message",
 		"role":          "assistant",
 		"model":         model,
@@ -576,7 +578,7 @@ func fromChatResponse(result map[string]any, model string) (map[string]any, erro
 	}, nil
 }
 
-func sseEncode(value map[string]any) string {
+func SSEEncode(value map[string]any) string {
 	data, _ := json.Marshal(value)
 	return fmt.Sprintf("event: %s\ndata: %s\n\n", value["type"], string(data))
 }
@@ -590,7 +592,7 @@ type sseReader struct {
 	size    int
 }
 
-const sseLineLimit = 16 * 1024 * 1024
+const SSELineLimit = 16 * 1024 * 1024
 
 // nextEvent returns the next joined data payload, or io.EOF at end of stream.
 func (r *sseReader) nextEvent() (string, error) {
@@ -638,8 +640,8 @@ func (r *sseReader) line(value string) *string {
 			part = part[1:]
 		}
 		r.size += len(part)
-		if r.size > sseLineLimit {
-			panic(apiError(502, "Événement SSE trop volumineux.", "upstream_error"))
+		if r.size > SSELineLimit {
+			panic(apperr.New(502, "Événement SSE trop volumineux.", "upstream_error"))
 		}
 		r.data = append(r.data, part)
 	}
@@ -648,7 +650,7 @@ func (r *sseReader) line(value string) *string {
 
 func newSSEReader(body io.Reader) *sseReader {
 	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 64*1024), sseLineLimit+1)
+	scanner.Buffer(make([]byte, 64*1024), SSELineLimit+1)
 	return &sseReader{scanner: scanner}
 }
 
@@ -674,23 +676,23 @@ func parseEvent(raw string) (map[string]any, error) {
 }
 
 // writeSSE writes a chunk to the response, flushing immediately.
-type sseWriter struct {
-	w   http.ResponseWriter
-	err error
+type SSEWriter struct {
+	Dst http.ResponseWriter
+	Err error
 }
 
-func (w *sseWriter) write(data []byte) {
-	if w.err != nil {
+func (w *SSEWriter) Write(data []byte) {
+	if w.Err != nil {
 		return
 	}
-	_, w.err = w.w.Write(data)
-	if w.err == nil {
-		w.w.(interface{ Flush() }).Flush()
+	_, w.Err = w.Dst.Write(data)
+	if w.Err == nil {
+		w.Dst.(interface{ Flush() }).Flush()
 	}
 }
 
 // nativeMessageStream mirrors nativeMessageStream(stream, model).
-func nativeMessageStream(body io.Reader, model string, out *sseWriter) error {
+func NativeMessageStream(body io.Reader, model string, out *SSEWriter) error {
 	reader := newSSEReader(body)
 	started := false
 	stopped := false
@@ -717,7 +719,7 @@ func nativeMessageStream(body io.Reader, model string, out *sseWriter) error {
 		if event["type"] == "message_stop" {
 			stopped = true
 		}
-		out.write([]byte(sseEncode(event)))
+		out.Write([]byte(SSEEncode(event)))
 	}
 	if !started || !stopped {
 		return upstreamInvalid("Le flux Anthropic s’est interrompu avant sa fin.")
@@ -733,7 +735,7 @@ type toolCallAcc struct {
 }
 
 // chatToMessageStream mirrors chatToMessageStream(stream, model).
-func chatToMessageStream(body io.Reader, model string, out *sseWriter) error {
+func ChatToMessageStream(body io.Reader, model string, out *SSEWriter) error {
 	reader := newSSEReader(body)
 	started := false
 	done := false
@@ -765,10 +767,10 @@ func chatToMessageStream(body io.Reader, model string, out *sseWriter) error {
 			usage = u
 		}
 		if !started {
-			out.write([]byte(sseEncode(map[string]any{
+			out.Write([]byte(SSEEncode(map[string]any{
 				"type": "message_start",
 				"message": map[string]any{
-					"id":            "msg_" + randomID(),
+					"id":            "msg_" + config.RandomID(),
 					"type":          "message",
 					"role":          "assistant",
 					"model":         model,
@@ -780,7 +782,7 @@ func chatToMessageStream(body io.Reader, model string, out *sseWriter) error {
 			})))
 			started = true
 		}
-		choices, _ := asArray(chunk["choices"])
+		choices, _ := apperr.AsArray(chunk["choices"])
 		var choice map[string]any
 		for _, c := range choices {
 			cObj, _ := c.(map[string]any)
@@ -788,7 +790,7 @@ func chatToMessageStream(body io.Reader, model string, out *sseWriter) error {
 				continue
 			}
 			if idx, ok := cObj["index"]; ok {
-				if n, ok := asInt(idx); ok && n == 0 {
+				if n, ok := apperr.AsInt(idx); ok && n == 0 {
 					choice = cObj
 					break
 				}
@@ -815,22 +817,22 @@ func chatToMessageStream(body io.Reader, model string, out *sseWriter) error {
 			if textIndex == -1 {
 				textIndex = nextIndex
 				nextIndex++
-				out.write([]byte(sseEncode(map[string]any{
+				out.Write([]byte(SSEEncode(map[string]any{
 					"type":          "content_block_start",
 					"index":         textIndex,
 					"content_block": map[string]any{"type": "text", "text": ""},
 				})))
 			}
-			out.write([]byte(sseEncode(map[string]any{
+			out.Write([]byte(SSEEncode(map[string]any{
 				"type":  "content_block_delta",
 				"index": textIndex,
 				"delta": map[string]any{"type": "text_delta", "text": s},
 			})))
 		}
-		if tc, ok := asArray(delta["tool_calls"]); ok {
+		if tc, ok := apperr.AsArray(delta["tool_calls"]); ok {
 			for _, piece := range tc {
 				p, _ := piece.(map[string]any)
-				idx, ok := asInt(p["index"])
+				idx, ok := apperr.AsInt(p["index"])
 				if !ok || idx < 0 {
 					return upstreamInvalid("Index d’appel d’outil invalide.")
 				}
@@ -854,7 +856,7 @@ func chatToMessageStream(body io.Reader, model string, out *sseWriter) error {
 						argumentSize += len(args)
 					}
 				}
-				if argumentSize > sseLineLimit || len(calls) > 1024 {
+				if argumentSize > SSELineLimit || len(calls) > 1024 {
 					return upstreamInvalid("Appels d’outils trop volumineux.")
 				}
 			}
@@ -867,7 +869,7 @@ func chatToMessageStream(body io.Reader, model string, out *sseWriter) error {
 		return upstreamInvalid("Le flux Chat Completions s’est interrompu avant sa fin.")
 	}
 	if textIndex != -1 {
-		out.write([]byte(sseEncode(map[string]any{"type": "content_block_stop", "index": textIndex})))
+		out.Write([]byte(SSEEncode(map[string]any{"type": "content_block_stop", "index": textIndex})))
 	}
 	// Buffer interleaved tool calls to emit complete, sequential Anthropic blocks.
 	for _, i := range callOrder {
@@ -887,30 +889,30 @@ func chatToMessageStream(body io.Reader, model string, out *sseWriter) error {
 			"index":         index,
 			"content_block": map[string]any{"type": "tool_use", "id": block["id"], "name": block["name"], "input": map[string]any{}},
 		}
-		out.write([]byte(sseEncode(start)))
+		out.Write([]byte(SSEEncode(start)))
 		if len(call.pieces) == 0 {
 			call.pieces = []string{"{}"}
 		}
 		for _, pj := range call.pieces {
-			out.write([]byte(sseEncode(map[string]any{
+			out.Write([]byte(SSEEncode(map[string]any{
 				"type":  "content_block_delta",
 				"index": index,
 				"delta": map[string]any{"type": "input_json_delta", "partial_json": pj},
 			})))
 		}
-		out.write([]byte(sseEncode(map[string]any{"type": "content_block_stop", "index": index})))
+		out.Write([]byte(SSEEncode(map[string]any{"type": "content_block_stop", "index": index})))
 	}
-	out.write([]byte(sseEncode(map[string]any{
+	out.Write([]byte(SSEEncode(map[string]any{
 		"type":  "message_delta",
 		"delta": map[string]any{"stop_reason": stopReason(finish, len(calls) > 0), "stop_sequence": nil},
 		"usage": usageFromChat(usage),
 	})))
-	out.write([]byte(sseEncode(map[string]any{"type": "message_stop"})))
+	out.Write([]byte(SSEEncode(map[string]any{"type": "message_stop"})))
 	return nil
 }
 
 // estimateInputTokens mirrors estimateInputTokens(request).
-func estimateInputTokens(request map[string]any) int {
+func EstimateInputTokens(request map[string]any) int {
 	images := 0
 	replacer := func(v any) any {
 		if obj, ok := v.(map[string]any); ok {
@@ -926,7 +928,7 @@ func estimateInputTokens(request map[string]any) int {
 	if len(data) == 0 {
 		return 1
 	}
-	est := (len(data) + 2) / 3 + images*1600
+	est := (len(data)+2)/3 + images*1600
 	if est < 1 {
 		est = 1
 	}
@@ -978,5 +980,3 @@ func marshalReplaced(v any, replacer func(any) any) any {
 		return v
 	}
 }
-
-var _ = bytes.MinRead

@@ -11,12 +11,12 @@ Passerelle IA locale : expose un point d'entrée unique vers vos fournisseurs (O
 - **Sécurité** : token local, chiffrement AES-GCM des clés API au repos (clé maîtresse), clés jamais renvoyées par l'interface
 
 ## Demo
-![Screenshot de P4Relay sur la vue d'ensemble.](https://raw.githubusercontent.com/P4sC4L/P4Relay/main/public/screenshot/demo.png)
+![Screenshot de P4Relay sur la vue d'ensemble.](https://raw.githubusercontent.com/P4sC4L/P4Relay/main/internal/p4relay/web/public/screenshot/demo.png)
 
 ## Compilation
 
 ```
-go build -o P4Relay.exe .
+go build -o P4Relay.exe ./cmd/p4relay
 ```
 
 ## Lancement
@@ -30,13 +30,18 @@ Le serveur tourne sur `http://127.0.0.1:7777` par défaut.
 ## Structure
 
 ```
-main.go         Serveur HTTP, routes, logique réseau
-anthropic.go    Adaptateur Anthropic
-config.go       Chargement/sauvegarde de la configuration
-errors.go       Gestion des erreurs
-crypto.go     Chiffrement AES-GCM des clés API (clé maîtresse)
-public/         Interface web (index.html, app.js, style.css, logo.png)
-data/           Configuration locale (ignorée par git — contient les clés)
+cmd/p4relay/                 Point d'entrée (main.go, ressource d'icône Windows)
+internal/p4relay/
+  server/                    Passerelle, routeur HTTP, sécurité d'accès
+  proxy/                     Routage des requêtes /v1 vers les fournisseurs
+  admin/                     Routes d'administration /api/*
+  anthropic/                 Conversion OpenAI ↔ Anthropic, flux SSE
+  config/                    Chargement/sauvegarde de la configuration
+  journal/                   Journal d'activité et statistiques
+  errors/                    Erreurs API et utilitaires JSON
+  crypto/                    Chiffrement AES-GCM des clés API (clé maître)
+  web/                       Interface embarquée (index.html, app.js, style.css, logos)
+data/                        Configuration locale (ignorée par git — contient les clés)
 ```
 
 ## Configuration

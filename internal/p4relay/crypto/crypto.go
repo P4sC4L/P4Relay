@@ -1,4 +1,4 @@
-package main
+package crypto
 
 import (
 	"crypto/aes"
@@ -81,7 +81,7 @@ func promoteLegacyKeyFile(dataDir string) {
 // loadMasterKey résout la clé maîtresse : variable d'environnement, sinon
 // fichier data/key, sinon génération + écriture du fichier.
 // La clé renvoyée est toujours non nulle : le chiffrement est actif par défaut.
-func loadMasterKey(dataDir string) ([]byte, error) {
+func LoadMasterKey(dataDir string) ([]byte, error) {
 	if key, ok, err := masterKeyFromEnv(); err != nil {
 		return nil, err
 	} else if ok {
@@ -120,7 +120,7 @@ func gcm(key []byte) (cipher.AEAD, error) {
 }
 
 // encryptValue chiffre une valeur avec AES-GCM. Valeur vide → renvoyée telle quelle.
-func encryptValue(key []byte, value string) (string, error) {
+func EncryptValue(key []byte, value string) (string, error) {
 	if value == "" {
 		return "", nil
 	}
@@ -137,14 +137,14 @@ func encryptValue(key []byte, value string) (string, error) {
 }
 
 // isEncryptedValue dit si une valeur stockée est déjà au format chiffré.
-func isEncryptedValue(value string) bool {
+func IsEncryptedValue(value string) bool {
 	return len(value) > len(encryptedPrefix) && value[:len(encryptedPrefix)] == encryptedPrefix
 }
 
 // decryptValue déchiffre une valeur au format "enc:..." ; toute autre valeur
 // est renvoyée telle quelle (compatibilité avec les clés en clair).
-func decryptValue(key []byte, value string) (string, error) {
-	if !isEncryptedValue(value) {
+func DecryptValue(key []byte, value string) (string, error) {
+	if !IsEncryptedValue(value) {
 		return value, nil
 	}
 	raw, err := base64.StdEncoding.DecodeString(value[len(encryptedPrefix):])

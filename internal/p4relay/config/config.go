@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"crypto/rand"
@@ -11,6 +11,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"sync"
+
+	"p4relay/internal/p4relay/crypto"
+	apperr "p4relay/internal/p4relay/errors"
 )
 
 type Provider struct {
@@ -50,7 +53,7 @@ var presets = []Provider{
 	{ID: "anthropic", Name: "Claude · Anthropic", BaseURL: "https://api.anthropic.com/v1", Kind: "anthropic"},
 }
 
-func randomToken() string {
+func RandomToken() string {
 	b := make([]byte, 24)
 	if _, err := rand.Read(b); err != nil {
 		panic(err)
@@ -58,7 +61,7 @@ func randomToken() string {
 	return "p4-" + hex.EncodeToString(b)
 }
 
-func randomID() string {
+func RandomID() string {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
 		panic(err)
@@ -67,22 +70,22 @@ func randomID() string {
 	return s[0:8] + "-" + s[8:12] + "-" + s[12:16] + "-" + s[16:20] + "-" + s[20:32]
 }
 
-func networkSettings(value any) (Network, error) {
+func NetworkSettings(value any) (Network, error) {
 	def := Network{LanEnabled: false, Port: 7777}
 	if value == nil {
 		return def, nil
 	}
 	obj, ok := value.(map[string]any)
 	if !ok {
-		return Network{}, apiError(400, "Le port doit être un entier entre 1 et 65535 et l’accès réseau doit être ON ou OFF.")
+		return Network{}, apperr.New(400, "Le port doit être un entier entre 1 et 65535 et l’accès réseau doit être ON ou OFF.")
 	}
 	lan, okL := obj["lanEnabled"].(bool)
 	if !okL {
-		return Network{}, apiError(400, "Le port doit être un entier entre 1 et 65535 et l’accès réseau doit être ON ou OFF.")
+		return Network{}, apperr.New(400, "Le port doit être un entier entre 1 et 65535 et l’accès réseau doit être ON ou OFF.")
 	}
-	port, okP := asInt(obj["port"])
+	port, okP := apperr.AsInt(obj["port"])
 	if !okP || port < 1 || port > 65535 {
-		return Network{}, apiError(400, "Le port doit être un entier entre 1 et 65535 et l’accès réseau doit être ON ou OFF.")
+		return Network{}, apperr.New(400, "Le port doit être un entier entre 1 et 65535 et l’accès réseau doit être ON ou OFF.")
 	}
 	return Network{LanEnabled: lan, Port: int(port)}, nil
 }
@@ -98,7 +101,7 @@ func encryptConfigForDisk(key []byte, cfg *Config) (*Config, error) {
 		return nil, err
 	}
 	for i := range c.Providers {
-		enc, err := encryptValue(key, c.Providers[i].APIKey)
+		enc, err := crypto.EncryptValue(key, c.Providers[i].APIKey)
 		if err != nil {
 			return nil, err
 		}
@@ -121,10 +124,10 @@ func decryptConfigFromDisk(key []byte, cfg *Config) (*Config, error) {
 		if c.Providers[i].APIKey == "" {
 			continue
 		}
-		if !isEncryptedValue(c.Providers[i].APIKey) {
+		if !crypto.IsEncryptedValue(c.Providers[i].APIKey) {
 			continue // clé en clair (installation antérieure) : laissée telle quelle, migrée au premier enregistrement
 		}
-		plain, err := decryptValue(key, c.Providers[i].APIKey)
+		plain, err := crypto.DecryptValue(key, c.Providers[i].APIKey)
 		if err != nil {
 			return nil, fmt.Errorf("fournisseur « %s » : %v", c.Providers[i].Name, err)
 		}
@@ -135,7 +138,7 @@ func decryptConfigFromDisk(key []byte, cfg *Config) (*Config, error) {
 
 // loadConfig reads or creates data/config.json (mirrors createApp init).
 // Les clés API lues du disque sont déchiffrées en mémoire (clé maîtresse).
-func loadConfig(dataDir string, key []byte) (*Config, error) {
+func Load(dataDir string, key []byte) (*Config, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("impossible de créer le dossier de données : %v", err)
 	}
@@ -145,7 +148,7 @@ func loadConfig(dataDir string, key []byte) (*Config, error) {
 		if os.IsNotExist(err) {
 			cfg := &Config{
 				Version:    1,
-				LocalToken: randomToken(),
+				LocalToken: RandomToken(),
 				Providers:  make([]Provider, 0, len(presets)),
 				Aliases:    []Alias{},
 				Network:    Network{LanEnabled: false, Port: 7777},
@@ -177,7 +180,7 @@ func loadConfig(dataDir string, key []byte) (*Config, error) {
 	if err := json.Unmarshal(raw, &rawNet); err != nil {
 		return nil, fmt.Errorf("Configuration illisible. Corrigez ou restaurez data/config.json avant de redémarrer.")
 	}
-	nw, err := networkSettings(rawNet.Network)
+	nw, err := NetworkSettings(rawNet.Network)
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +200,7 @@ func loadConfig(dataDir string, key []byte) (*Config, error) {
 	// ne sont jamais chiffrées (un fournisseur sans clé garde "apiKey": "").
 	needMigrate := false
 	for i := range cfg.Providers {
-		if cfg.Providers[i].APIKey != "" && !isEncryptedValue(cfg.Providers[i].APIKey) {
+		if cfg.Providers[i].APIKey != "" && !crypto.IsEncryptedValue(cfg.Providers[i].APIKey) {
 			needMigrate = true
 			break
 		}
@@ -219,14 +222,14 @@ func loadConfig(dataDir string, key []byte) (*Config, error) {
 // config contient les clés API en CLAIR en mémoire ; le fichier config.json
 // les stocke chiffrées en AES-GCM avec la clé maîtresse (data/key ou variable
 // d'environnement P4RELAY_MASTER_KEY).
-type store struct {
+type Store struct {
 	mu     sync.Mutex
 	file   string
 	key    []byte // clé maîtresse AES-GCM
 	config *Config
 }
 
-func (s *store) mutate(fn func(next *Config) (any, error)) (any, error) {
+func (s *Store) Mutate(fn func(next *Config) (any, error)) (any, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	next := s.clone()
@@ -238,37 +241,37 @@ func (s *store) mutate(fn func(next *Config) (any, error)) (any, error) {
 	if s.key != nil {
 		toWrite, err = encryptConfigForDisk(s.key, next)
 		if err != nil {
-			return nil, apiError(500, "Impossible de chiffrer la clé API.")
+			return nil, apperr.New(500, "Impossible de chiffrer la clé API.")
 		}
 	}
 	data, _ := json.MarshalIndent(toWrite, "", "  ")
-	tmp := s.file + "." + randomID() + ".tmp"
+	tmp := s.file + "." + RandomID() + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return nil, apiError(500, "Opération impossible. Vérifiez la connexion et l’accès au fichier de configuration.")
+		return nil, apperr.New(500, "Opération impossible. Vérifiez la connexion et l’accès au fichier de configuration.")
 	}
 	if err := os.Rename(tmp, s.file); err != nil {
 		_ = os.Remove(tmp)
-		return nil, apiError(500, "Opération impossible. Vérifiez la connexion et l’accès au fichier de configuration.")
+		return nil, apperr.New(500, "Opération impossible. Vérifiez la connexion et l’accès au fichier de configuration.")
 	}
 	s.config = next
 	return result, nil
 }
 
-func (s *store) clone() *Config {
+func (s *Store) clone() *Config {
 	data, _ := json.Marshal(s.config)
 	var c Config
 	_ = json.Unmarshal(data, &c)
 	return &c
 }
 
-func (s *store) get() *Config {
+func (s *Store) Get() *Config {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.clone()
 }
 
 // lanAddresses returns the non-internal IPv4 addresses (mirrors lanAddresses()).
-func lanAddresses() []string {
+func LANAddresses() []string {
 	seen := map[string]bool{}
 	var out []string
 	addrs, err := net.InterfaceAddrs()
@@ -293,7 +296,7 @@ func lanAddresses() []string {
 	return out
 }
 
-func loopback(address string) bool {
+func Loopback(address string) bool {
 	if address == "::1" {
 		return true
 	}
@@ -301,18 +304,18 @@ func loopback(address string) bool {
 }
 
 // baseUrl mirrors baseUrl(): https required except localhost http, no credentials/query/hash.
-func validateBaseURL(value any) (string, error) {
-	raw, err := required(value, "URL de base", 2000)
+func ValidateBaseURL(value any) (string, error) {
+	raw, err := apperr.Required(value, "URL de base", 2000)
 	if err != nil {
 		return "", err
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "", apiError(400, "URL de base invalide.")
+		return "", apperr.New(400, "URL de base invalide.")
 	}
 	local := u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost" || u.Hostname() == "::1"
 	if (u.Scheme != "https" && !(u.Scheme == "http" && local)) || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return "", apiError(400, "Utilisez HTTPS, ou HTTP pour un fournisseur sur localhost. Aucun identifiant ni paramètre dans l’URL.")
+		return "", apperr.New(400, "Utilisez HTTPS, ou HTTP pour un fournisseur sur localhost. Aucun identifiant ni paramètre dans l’URL.")
 	}
 	// normalize: strip trailing slashes
 	for len(raw) > 0 && raw[len(raw)-1] == '/' {
@@ -322,7 +325,7 @@ func validateBaseURL(value any) (string, error) {
 }
 
 // portOf returns the explicit port of a URL, defaulting to 443/80.
-func portOf(u *url.URL) int {
+func PortOf(u *url.URL) int {
 	if u.Port() != "" {
 		var p int
 		fmt.Sscanf(u.Port(), "%d", &p)
@@ -332,4 +335,19 @@ func portOf(u *url.URL) int {
 		return 443
 	}
 	return 80
+}
+
+// NewStore construit le store de configuration pour un repertoire de donnees.
+func NewStore(dataDir string, key []byte, cfg *Config) *Store {
+	return &Store{file: filepath.Join(dataDir, "config.json"), config: cfg, key: key}
+}
+
+// Contains dit si une liste contient une valeur.
+func Contains(list []string, s string) bool {
+	for _, e := range list {
+		if e == s {
+			return true
+		}
+	}
+	return false
 }

@@ -1,4 +1,4 @@
-package main
+package errors
 
 import (
 	"encoding/json"
@@ -7,7 +7,7 @@ import (
 	"net/http"
 )
 
-const maxBody = 16 * 1024 * 1024
+const MaxBody = 16 * 1024 * 1024
 
 // ApiError reflects lib/errors.mjs
 type ApiError struct {
@@ -18,7 +18,7 @@ type ApiError struct {
 
 func (e *ApiError) Error() string { return e.Message }
 
-func apiError(status int, message string, code ...string) *ApiError {
+func New(status int, message string, code ...string) *ApiError {
 	c := "invalid_request"
 	if len(code) > 0 {
 		c = code[0]
@@ -27,7 +27,7 @@ func apiError(status int, message string, code ...string) *ApiError {
 }
 
 // anthropicError reflects anthropicError() in lib/errors.mjs
-func anthropicError(status int, message string) map[string]any {
+func Anthropic(status int, message string) map[string]any {
 	typ := "invalid_request_error"
 	switch {
 	case status == 401:
@@ -51,7 +51,7 @@ func anthropicError(status int, message string) map[string]any {
 	}
 }
 
-func openaiError(status int, message string, code string) map[string]any {
+func OpenAI(status int, message string, code string) map[string]any {
 	if code == "" {
 		code = "internal_error"
 	}
@@ -64,7 +64,7 @@ func openaiError(status int, message string, code string) map[string]any {
 	}
 }
 
-func writeJSON(w http.ResponseWriter, status int, body any) {
+func WriteJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
@@ -72,24 +72,24 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 }
 
 // readJSONBody mirrors body(): requires JSON content-type, 16 Mo max, returns an object.
-func readJSONBody(r *http.Request) (map[string]any, error) {
+func ReadJSONBody(r *http.Request) (map[string]any, error) {
 	if !isJSONBody(r) {
-		return nil, apiError(415, "Content-Type: application/json requis.")
+		return nil, New(415, "Content-Type: application/json requis.")
 	}
-	buf, err := io.ReadAll(io.LimitReader(r.Body, maxBody+1))
+	buf, err := io.ReadAll(io.LimitReader(r.Body, MaxBody+1))
 	if err != nil {
-		return nil, apiError(500, "Lecture du corps impossible.")
+		return nil, New(500, "Lecture du corps impossible.")
 	}
-	if int64(len(buf)) > maxBody {
-		return nil, apiError(413, "Requête trop volumineuse (maximum 16 Mo).")
+	if int64(len(buf)) > MaxBody {
+		return nil, New(413, "Requête trop volumineuse (maximum 16 Mo).")
 	}
 	var value any
 	if err := json.Unmarshal(buf, &value); err != nil {
-		return nil, apiError(400, "JSON invalide.")
+		return nil, New(400, "JSON invalide.")
 	}
 	obj, ok := value.(map[string]any)
 	if !ok {
-		return nil, apiError(400, "Un objet JSON est requis.")
+		return nil, New(400, "Un objet JSON est requis.")
 	}
 	return obj, nil
 }
@@ -99,18 +99,18 @@ func isJSONBody(r *http.Request) bool {
 	return len(ct) >= len("application/json") && ct[:len("application/json")] == "application/json"
 }
 
-func isPlainObject(v any) bool {
+func IsPlainObject(v any) bool {
 	_, ok := v.(map[string]any)
 	return ok
 }
 
 // required mirrors required(value, name, max)
-func required(value any, name string, max int) (string, error) {
+func Required(value any, name string, max int) (string, error) {
 	s, ok := value.(string)
-	if !ok || len(trimSpace(s)) == 0 || len([]rune(trimSpace(s))) > max || hasControlChars(s) {
-		return "", apiError(400, fmt.Sprintf("%s invalide.", name))
+	if !ok || len(TrimSpace(s)) == 0 || len([]rune(TrimSpace(s))) > max || hasControlChars(s) {
+		return "", New(400, fmt.Sprintf("%s invalide.", name))
 	}
-	return trimSpace(s), nil
+	return TrimSpace(s), nil
 }
 
 func hasControlChars(s string) bool {
@@ -123,7 +123,7 @@ func hasControlChars(s string) bool {
 	return false
 }
 
-func trimSpace(s string) string {
+func TrimSpace(s string) string {
 	start, end := 0, len(s)
 	for start < end && isSpace(s[start]) {
 		start++
@@ -139,7 +139,7 @@ func isSpace(c byte) bool {
 }
 
 // asInt reports whether v is an integer JSON number.
-func asInt(v any) (int64, bool) {
+func AsInt(v any) (int64, bool) {
 	f, ok := v.(float64)
 	if !ok || f != float64(int64(f)) {
 		return 0, false
@@ -148,7 +148,7 @@ func asInt(v any) (int64, bool) {
 }
 
 // asArray reports whether v is a JSON array.
-func asArray(v any) ([]any, bool) {
+func AsArray(v any) ([]any, bool) {
 	a, ok := v.([]any)
 	return a, ok
 }

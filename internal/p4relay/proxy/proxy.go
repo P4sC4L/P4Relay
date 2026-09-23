@@ -1,4 +1,4 @@
-package main
+package proxy
 
 import (
 	"bufio"
@@ -10,9 +10,25 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"p4relay/internal/p4relay/anthropic"
+	"p4relay/internal/p4relay/config"
+	apperr "p4relay/internal/p4relay/errors"
+	"p4relay/internal/p4relay/journal"
 )
 
-func headersFor(p *Provider, models bool) map[string]string {
+const timeout = 180 * time.Second
+
+// Deps est la partie de la passerelle dont le proxy a besoin.
+type Deps interface {
+	Store() *config.Store
+	Client() *http.Client
+	Redact(string) string
+	Record(journal.Entry)
+	ProviderFor(string) (*config.Provider, error)
+}
+
+func HeadersFor(p *config.Provider, models bool) map[string]string {
 	headers := map[string]string{"Content-Type": "application/json"}
 	if p.APIKey != "" {
 		headers["Authorization"] = "Bearer " + p.APIKey
@@ -33,7 +49,7 @@ func headersFor(p *Provider, models bool) map[string]string {
 	return headers
 }
 
-func (g *gateway) upstreamError(resp *http.Response) error {
+func UpstreamError(d Deps, resp *http.Response) error {
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	var message string
 	var data map[string]any
@@ -58,7 +74,7 @@ func (g *gateway) upstreamError(resp *http.Response) error {
 	} else if len(message) > 1500 {
 		message = message[:1500]
 	}
-	return apiError(status, g.redact("Fournisseur : "+message), "upstream_error")
+	return apperr.New(status, d.Redact("Fournisseur : "+message), "upstream_error")
 }
 
 // lineScanner scans SSE lines with a 16 MiB buffer.
@@ -68,7 +84,7 @@ type lineScanner struct {
 
 func newLineScanner(body io.Reader) *lineScanner {
 	sc := bufio.NewScanner(body)
-	sc.Buffer(make([]byte, 64*1024), sseLineLimit+1)
+	sc.Buffer(make([]byte, 64*1024), anthropic.SSELineLimit+1)
 	return &lineScanner{sc: sc}
 }
 
@@ -78,7 +94,7 @@ func (s *lineScanner) Text() string {
 }
 
 // aliasStream mirrors aliasStream(stream, model): rewrites the model field.
-func aliasStream(body io.Reader, model string, out *sseWriter) error {
+func aliasStream(body io.Reader, model string, out *anthropic.SSEWriter) error {
 	scanner := newLineScanner(body)
 	doneSeen := false
 	rewrite := func(line string) string {
@@ -95,7 +111,7 @@ func aliasStream(body io.Reader, model string, out *sseWriter) error {
 		}
 		var chunk any
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			panic(apiError(502, "Événement JSON invalide dans le flux du fournisseur.", "upstream_error"))
+			panic(apperr.New(502, "Événement JSON invalide dans le flux du fournisseur.", "upstream_error"))
 		}
 		obj, _ := chunk.(map[string]any)
 		if obj != nil {
@@ -106,43 +122,43 @@ func aliasStream(body io.Reader, model string, out *sseWriter) error {
 						msg = m
 					}
 				}
-				panic(apiError(502, msg, "upstream_error"))
+				panic(apperr.New(502, msg, "upstream_error"))
 			}
 			if _, present := obj["model"]; present {
 				obj["model"] = model
 			}
 		}
-		return "data: " + mustJSON(chunk)
+		return "data: " + anthropic.MustJSON(chunk)
 	}
 	defer func() {
 		if p := recover(); p != nil {
-			if apiErr, ok := p.(*ApiError); ok {
-				out.err = apiErr
+			if apiErr, ok := p.(*apperr.ApiError); ok {
+				out.Err = apiErr
 			}
 		}
 	}()
 	for scanner.Scan() {
 		line := strings.TrimSuffix(scanner.Text(), "\r")
-		out.write([]byte(rewrite(line) + "\n"))
+		out.Write([]byte(rewrite(line) + "\n"))
 	}
 	if !doneSeen {
-		return apiError(502, "Le flux du fournisseur s’est interrompu avant sa fin.", "upstream_error")
+		return apperr.New(502, "Le flux du fournisseur s’est interrompu avant sa fin.", "upstream_error")
 	}
 	return nil
 }
 
-func (g *gateway) proxy(w http.ResponseWriter, r *http.Request, protocol string, countOnly bool) {
+func Run(d Deps, w http.ResponseWriter, r *http.Request, protocol string, countOnly bool) {
 	started := time.Now()
 	var aliasName, providerName, targetModel string
 	status := 500
 	streaming := false
 
-	ctx, cancel := context.WithTimeout(r.Context(), timeoutMs)
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 
 	var proxyErr error
 	defer func() {
-		var apiErr *ApiError
+		var apiErr *apperr.ApiError
 		if errors.As(proxyErr, &apiErr) {
 			status = apiErr.Status
 		} else if proxyErr == nil && status >= 400 {
@@ -154,8 +170,8 @@ func (g *gateway) proxy(w http.ResponseWriter, r *http.Request, protocol string,
 		} else if proxyErr != nil {
 			status = 502
 		}
-		g.record(logEntry{
-			ID:         randomID(),
+		d.Record(journal.Entry{
+			ID:         config.RandomID(),
 			At:         time.Now().UTC().Format(time.RFC3339Nano),
 			Alias:      orDash(aliasName),
 			Provider:   orDash(providerName),
@@ -167,7 +183,7 @@ func (g *gateway) proxy(w http.ResponseWriter, r *http.Request, protocol string,
 		})
 	}()
 
-	input, err := readJSONBody(r)
+	input, err := apperr.ReadJSONBody(r)
 	if err != nil {
 		proxyErr = err
 		return
@@ -176,40 +192,40 @@ func (g *gateway) proxy(w http.ResponseWriter, r *http.Request, protocol string,
 		streaming = s
 	}
 	var name string
-	if name, err = required(input["model"], "Nom du modèle", 64); err != nil {
+	if name, err = apperr.Required(input["model"], "Nom du modèle", 64); err != nil {
 		proxyErr = err
 		return
 	}
-	msgs, ok := asArray(input["messages"])
+	msgs, ok := apperr.AsArray(input["messages"])
 	if !ok || len(msgs) == 0 {
-		proxyErr = apiError(400, "messages doit être une liste non vide de messages avec un rôle.")
+		proxyErr = apperr.New(400, "messages doit être une liste non vide de messages avec un rôle.")
 		return
 	}
 	for _, m := range msgs {
 		obj, ok := m.(map[string]any)
 		if !ok {
-			proxyErr = apiError(400, "messages doit être une liste non vide de messages avec un rôle.")
+			proxyErr = apperr.New(400, "messages doit être une liste non vide de messages avec un rôle.")
 			return
 		}
 		if _, ok := obj["role"].(string); !ok {
-			proxyErr = apiError(400, "messages doit être une liste non vide de messages avec un rôle.")
+			proxyErr = apperr.New(400, "messages doit être une liste non vide de messages avec un rôle.")
 			return
 		}
 	}
 	if v, present := input["stream"]; present {
 		if _, ok := v.(bool); !ok {
-			proxyErr = apiError(400, "stream doit être un booléen.")
+			proxyErr = apperr.New(400, "stream doit être un booléen.")
 			return
 		}
 	}
 	if protocol == "anthropic" {
-		if err = validateMessages(input, countOnly); err != nil {
+		if err = anthropic.ValidateMessages(input, countOnly); err != nil {
 			proxyErr = err
 			return
 		}
 	}
 
-	cfg := g.store.get()
+	cfg := d.Store().Get()
 	found := false
 	for i := range cfg.Aliases {
 		a := &cfg.Aliases[i]
@@ -217,30 +233,29 @@ func (g *gateway) proxy(w http.ResponseWriter, r *http.Request, protocol string,
 			found = true
 			aliasName = a.Name
 			targetModel = a.TargetModel
-			provider, perr := g.providerFor(a.ProviderID)
+			provider, perr := d.ProviderFor(a.ProviderID)
 			if perr != nil {
 				proxyErr = perr
 				return
 			}
 			providerName = provider.Name
 			if _, present := input["models"]; present {
-				proxyErr = apiError(400, "Les champs models et route ne sont pas acceptés : utilisez un alias local.")
+				proxyErr = apperr.New(400, "Les champs models et route ne sont pas acceptés : utilisez un alias local.")
 				return
 			}
 			if _, present := input["route"]; present {
-				proxyErr = apiError(400, "Les champs models et route ne sont pas acceptés : utilisez un alias local.")
+				proxyErr = apperr.New(400, "Les champs models et route ne sont pas acceptés : utilisez un alias local.")
 				return
 			}
 			status = 200
-			proxyErr = g.doProxy(w, r, ctx, provider, aliasName, targetModel, protocol, countOnly, streaming, input)
+			proxyErr = doProxy(d, w, r, ctx, provider, aliasName, targetModel, protocol, countOnly, streaming, input)
 			return
 		}
 	}
 	if !found {
-		proxyErr = apiError(404, fmt.Sprintf("Alias inconnu ou désactivé : %s. Ajoutez-le dans l’interface.", name), "model_not_found")
+		proxyErr = apperr.New(404, fmt.Sprintf("Alias inconnu ou désactivé : %s. Ajoutez-le dans l’interface.", name), "model_not_found")
 	}
 }
-
 func orDash(s string) string {
 	if s == "" {
 		return "—"
@@ -259,12 +274,12 @@ func endpointName(protocol string, countOnly bool) string {
 }
 
 // doProxy performs the upstream call and writes the response.
-func (g *gateway) doProxy(w http.ResponseWriter, r *http.Request, ctx context.Context, provider *Provider, aliasName, targetModel, protocol string, countOnly, streaming bool, input map[string]any) error {
+func doProxy(d Deps, w http.ResponseWriter, r *http.Request, ctx context.Context, provider *config.Provider, aliasName, targetModel, protocol string, countOnly, streaming bool, input map[string]any) error {
 	native := protocol == "anthropic" && provider.Kind == "anthropic"
 	var outgoing map[string]any
 	var err error
 	if protocol == "anthropic" && !native {
-		outgoing, err = toChatRequest(input, targetModel, provider.Kind)
+		outgoing, err = anthropic.ToChatRequest(input, targetModel, provider.Kind)
 		if err != nil {
 			return err
 		}
@@ -277,10 +292,10 @@ func (g *gateway) doProxy(w http.ResponseWriter, r *http.Request, ctx context.Co
 	}
 	if countOnly && !native {
 		w.Header().Set("X-P4-Token-Count", "estimated")
-		writeJSON(w, 200, map[string]any{"input_tokens": estimateInputTokens(outgoing)})
+		apperr.WriteJSON(w, 200, map[string]any{"input_tokens": anthropic.EstimateInputTokens(outgoing)})
 		return nil
 	}
-	headers := headersFor(provider, native)
+	headers := HeadersFor(provider, native)
 	if native {
 		headers["anthropic-version"] = r.Header.Get("anthropic-version")
 		if headers["anthropic-version"] == "" {
@@ -311,114 +326,113 @@ func (g *gateway) doProxy(w http.ResponseWriter, r *http.Request, ctx context.Co
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	upstream, err := g.client.Do(req)
+	upstream, err := d.Client().Do(req)
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return apiError(504, "Le fournisseur a dépassé le délai de réponse (180 s par défaut).", "upstream_timeout")
+			return apperr.New(504, "Le fournisseur a dépassé le délai de réponse (180 s par défaut).", "upstream_timeout")
 		}
 		if errors.Is(r.Context().Err(), context.Canceled) {
-			return apiError(499, "Requête annulée.", "upstream_timeout")
+			return apperr.New(499, "Requête annulée.", "upstream_timeout")
 		}
-		return apiError(502, "Impossible de joindre le fournisseur. Vérifiez son URL et votre connexion.", "upstream_connection_error")
+		return apperr.New(502, "Impossible de joindre le fournisseur. Vérifiez son URL et votre connexion.", "upstream_connection_error")
 	}
 	defer upstream.Body.Close()
 	if upstream.StatusCode < 200 || upstream.StatusCode >= 300 {
 		if ra := upstream.Header.Get("Retry-After"); ra != "" {
 			w.Header().Set("Retry-After", ra)
 		}
-		return g.upstreamError(upstream)
+		return UpstreamError(d, upstream)
 	}
 	if countOnly {
 		var result map[string]any
 		if err := json.NewDecoder(upstream.Body).Decode(&result); err != nil {
-			return apiError(502, "Comptage Anthropic invalide.", "upstream_error")
+			return apperr.New(502, "Comptage Anthropic invalide.", "upstream_error")
 		}
-		n, ok := asInt(result["input_tokens"])
+		n, ok := apperr.AsInt(result["input_tokens"])
 		if !ok || n < 0 {
-			return apiError(502, "Comptage Anthropic invalide.", "upstream_error")
+			return apperr.New(502, "Comptage Anthropic invalide.", "upstream_error")
 		}
-		writeJSON(w, 200, map[string]any{"input_tokens": n})
+		apperr.WriteJSON(w, 200, map[string]any{"input_tokens": n})
 		return nil
 	}
 	if streaming {
 		ct := upstream.Header.Get("Content-Type")
 		if !strings.Contains(ct, "text/event-stream") {
-			return apiError(502, "Le fournisseur n’a pas renvoyé de flux SSE.", "upstream_error")
+			return apperr.New(502, "Le fournisseur n’a pas renvoyé de flux SSE.", "upstream_error")
 		}
 		if _, ok := w.(http.Flusher); !ok {
-			return apiError(500, "Streaming non disponible.")
+			return apperr.New(500, "Streaming non disponible.")
 		}
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache, no-transform")
 		w.Header().Set("X-Accel-Buffering", "no")
 		w.WriteHeader(200)
-		out := &sseWriter{w: w}
+		out := &anthropic.SSEWriter{Dst: w}
 		var streamErr error
 		switch {
 		case protocol == "anthropic" && native:
-			streamErr = nativeMessageStream(upstream.Body, aliasName, out)
+			streamErr = anthropic.NativeMessageStream(upstream.Body, aliasName, out)
 		case protocol == "anthropic":
-			streamErr = chatToMessageStream(upstream.Body, aliasName, out)
+			streamErr = anthropic.ChatToMessageStream(upstream.Body, aliasName, out)
 		default:
 			streamErr = aliasStream(upstream.Body, aliasName, out)
 		}
 		if streamErr != nil {
 			// Headers already sent: emit an error event and close.
 			st := 502
-			var apiErr *ApiError
+			var apiErr *apperr.ApiError
 			if errors.As(streamErr, &apiErr) {
 				st = apiErr.Status
 			}
-			msg := g.redact(apiErrorMessage(streamErr))
+			msg := d.Redact(apiErrorMessage(streamErr))
 			if protocol == "anthropic" {
-				out.write([]byte(sseEncode(anthropicError(st, msg))))
+				out.Write([]byte(anthropic.SSEEncode(apperr.Anthropic(st, msg))))
 			} else {
-				out.write([]byte("data: " + mustJSON(map[string]any{"error": map[string]any{"message": msg, "type": "upstream_error"}}) + "\n\n"))
+				out.Write([]byte("data: " + anthropic.MustJSON(map[string]any{"error": map[string]any{"message": msg, "type": "upstream_error"}}) + "\n\n"))
 			}
 		}
 		return streamErr
 	}
 	// Non-streaming.
-	raw, err := io.ReadAll(io.LimitReader(upstream.Body, maxBody+1))
+	raw, err := io.ReadAll(io.LimitReader(upstream.Body, apperr.MaxBody+1))
 	if err != nil {
-		return apiError(502, "Réponse JSON invalide du fournisseur.", "upstream_error")
+		return apperr.New(502, "Réponse JSON invalide du fournisseur.", "upstream_error")
 	}
 	var result map[string]any
 	if err := json.Unmarshal(raw, &result); err != nil {
-		return apiError(502, "Réponse JSON invalide du fournisseur.", "upstream_error")
+		return apperr.New(502, "Réponse JSON invalide du fournisseur.", "upstream_error")
 	}
 	if native {
 		if result["type"] != "message" {
-			return apiError(502, "Réponse incompatible avec Anthropic Messages.", "upstream_error")
+			return apperr.New(502, "Réponse incompatible avec Anthropic Messages.", "upstream_error")
 		}
-		if _, ok := asArray(result["content"]); !ok {
-			return apiError(502, "Réponse incompatible avec Anthropic Messages.", "upstream_error")
+		if _, ok := apperr.AsArray(result["content"]); !ok {
+			return apperr.New(502, "Réponse incompatible avec Anthropic Messages.", "upstream_error")
 		}
 		result["model"] = aliasName
-		writeJSON(w, 200, result)
+		apperr.WriteJSON(w, 200, result)
 		return nil
 	}
-	if !isPlainObject(result) {
-		return apiError(502, "Réponse incompatible avec Chat Completions.", "upstream_error")
+	if !apperr.IsPlainObject(result) {
+		return apperr.New(502, "Réponse incompatible avec Chat Completions.", "upstream_error")
 	}
-	if _, ok := asArray(result["choices"]); !ok {
-		return apiError(502, "Réponse incompatible avec Chat Completions.", "upstream_error")
+	if _, ok := apperr.AsArray(result["choices"]); !ok {
+		return apperr.New(502, "Réponse incompatible avec Chat Completions.", "upstream_error")
 	}
 	if protocol == "anthropic" {
-		converted, err := fromChatResponse(result, aliasName)
+		converted, err := anthropic.FromChatResponse(result, aliasName)
 		if err != nil {
 			return err
 		}
-		writeJSON(w, 200, converted)
+		apperr.WriteJSON(w, 200, converted)
 		return nil
 	}
 	result["model"] = aliasName
-	writeJSON(w, 200, result)
+	apperr.WriteJSON(w, 200, result)
 	return nil
 }
-
 func apiErrorMessage(err error) string {
-	var apiErr *ApiError
+	var apiErr *apperr.ApiError
 	if errors.As(err, &apiErr) {
 		return apiErr.Message
 	}
