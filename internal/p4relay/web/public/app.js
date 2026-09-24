@@ -3,6 +3,7 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;
 let state, currentPage = '', toastTimer, editKind, editId, testController;
 let lifecycle = 'running';
 let clearingLogs = false, refreshVersion = 0, activityPage = 1;
+const FALLBACK_LOG_PAGE_SIZE = 100, FALLBACK_PORT = 7777;
 const titles = { overview: 'Vue d’ensemble', providers: 'Fournisseurs', aliases: 'Alias de modèles', playground: 'Terrain d’essai', activity: 'Activité', settings: 'Connexion & paramètres' };
 const defaults = { openrouter: ['OpenRouter', 'https://openrouter.ai/api/v1'], openai: ['OpenAI', 'https://api.openai.com/v1'], anthropic: ['Claude · Anthropic', 'https://api.anthropic.com/v1'], custom: ['Fournisseur personnalisé', 'http://127.0.0.1:11434/v1'] };
 async function api(url, method = 'GET', data) {
@@ -28,8 +29,17 @@ function aliasTable(aliases) {
     return `<tr><td><span class="row-name"><span class="row-icon">⇄</span><span class="mono">${esc(a.name)}</span></span></td><td class="mono"><span class="arrow">→</span>${esc(a.targetModel)}</td><td>${esc(providerName(a.providerId))}</td><td><span class="badge ${available ? '' : 'pending'}">${!a.enabled ? 'Désactivé' : available ? 'Actif' : 'À configurer'}</span></td><td><div class="actions"><button class="button ghost small" data-action="edit-alias" data-id="${esc(a.id)}">Modifier</button><button class="button ghost small" data-action="delete-alias" data-id="${esc(a.id)}" aria-label="Supprimer ${esc(a.name)}">×</button></div></td></tr>`;
   }).join('')}</tbody></table></div>`;
 }
+// Taille de page reellement utilisee par le serveur : /api/logs la renvoie
+// sous pageSize, /api/state sous logPageSize. Le front ne doit pas la
+// connaitre en dur, sinon il compte ses pages avec une regle qui n'est pas
+// celle de l'API. Repli explicite si la valeur manque, et jamais de
+// division par zero ou par une taille absurde.
+function logPageSize() {
+  const size = Number(state?.logPageSize ?? state?.pageSize);
+  return Number.isInteger(size) && size > 0 ? size : FALLBACK_LOG_PAGE_SIZE;
+}
 function totalLogPages() {
-  return Math.max(1, Math.ceil((state.logTotal || 0) / 100));
+  return Math.max(1, Math.ceil((state.logTotal || 0) / logPageSize()));
 }
 function activityTable(logs) {
   if (!logs.length) return empty('≋', 'Votre prochaine requête apparaîtra ici', 'Retrouvez le routage, le temps de réponse et le statut de chaque appel. Le contenu des conversations n’est pas enregistré.');
@@ -66,7 +76,7 @@ function networkSection() {
       <label class="network-switch"><input id="network-lan" type="checkbox" role="switch" aria-describedby="network-warning" ${state.network.lanEnabled ? 'checked' : ''}><span class="switch-track" aria-hidden="true"></span><span>Accès au réseau local <strong id="network-mode" aria-hidden="true">${state.network.lanEnabled ? 'ON' : 'OFF'}</strong></span></label>
       <p class="notice" id="network-binding">${state.network.lanEnabled ? 'ON : toutes les interfaces IPv4 (0.0.0.0).' : 'OFF : uniquement cet ordinateur (127.0.0.1).'}</p>
       <div class="network-warning" id="network-warning"><strong>Attention à l’exposition réseau</strong><p>En mode ON, les appareils pouvant joindre ce PC peuvent appeler l’API avec votre clé locale et consommer vos crédits fournisseur. Les clés et les messages circulent en HTTP non chiffré. Toutes les interfaces IPv4 sont concernées, y compris les VPN.</p><p>Utilisez un réseau de confiance. N’ouvrez pas ce port sur Internet. Si Windows bloque la connexion, autorisez seulement le port choisi sur votre réseau privé dans le pare-feu. Le logiciel ne modifie pas le pare-feu.</p><p>L’interface, les réglages et le bouton de fermeture restent accessibles uniquement via 127.0.0.1 ou localhost sur ce PC.</p></div>
-      <label class="field network-port"><span>Port de l’API</span><input id="network-port" type="number" min="1" max="65535" step="1" required value="${state.network.port}"><small>Entre 1 et 65535. Valeur par défaut : 7777.</small></label>
+      <label class="field network-port"><span>Port de l’API</span><input id="network-port" type="number" min="1" max="65535" step="1" required value="${state.network.port}"><small>Entre 1 et 65535. Valeur par défaut : ${net.defaultPort ?? FALLBACK_PORT}.</small></label>
       ${net.portOverride !== null ? `<div class="notice">La variable PORT impose actuellement le port ${net.portOverride}. Le port enregistré ci-dessus sera utilisé après suppression de cette variable au lancement.</div>` : ''}
       <p>Écoute actuelle : <code>${esc(net.host)}:${net.port}</code> · ${net.lanEnabled ? 'Réseau activé' : 'Accès local uniquement'}</p>
       ${net.lanEnabled ? `<div class="network-addresses"><strong>Adresses API pour les autres appareils</strong>${net.lanUrls.length ? net.lanUrls.map(url => `<div class="field-row"><input aria-label="Adresse API réseau" readonly value="${esc(url)}"><button type="button" class="button secondary" data-action="copy-network-url" data-url="${esc(url)}">Copier</button></div>`).join('') : '<p>Aucune adresse IPv4 détectée. Vérifiez votre connexion réseau.</p>'}<p class="notice">Utilisez l’adresse de la carte réseau partagée avec votre autre appareil et la clé API locale. Pour Claude, retirez /v1 de cette adresse. Les adresses peuvent changer après une reconnexion.</p></div>` : ''}
@@ -106,11 +116,13 @@ async function refresh(redraw = true) {
       const result = await api(`/api/logs?page=${activityPage}`);
       state.logs = result.logs || [];
       state.logTotal = result.total || 0;
+      if (Number.isInteger(result.pageSize) && result.pageSize > 0) state.logPageSize = result.pageSize;
       if (activityPage > totalLogPages() && totalLogPages() >= 1) {
         activityPage = totalLogPages();
         const retry = await api(`/api/logs?page=${activityPage}`);
         state.logs = retry.logs || [];
         state.logTotal = retry.total || 0;
+        if (Number.isInteger(retry.pageSize) && retry.pageSize > 0) state.logPageSize = retry.pageSize;
       }
     }
     $('#server-status').innerHTML = '<i></i>Serveur en ligne'; $('#server-status').classList.remove('offline');

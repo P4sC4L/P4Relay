@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 
 	"p4relay/internal/p4relay/crypto"
@@ -38,6 +39,13 @@ type Network struct {
 	LanEnabled bool `json:"lanEnabled"`
 	Port       int  `json:"port"`
 }
+
+// DefaultPort est le port d'ecoute et le port enregistre quand aucune
+// configuration n'existe encore. Il n'existait qu'en dur a trois endroits
+// (deux fois ici, une fois dans le texte de l'interface) : un changement de
+// defaut obligeait a les retrouver tous. L'interface le recoit desormais par
+// /api/state (networkStatus.defaultPort).
+const DefaultPort = 7777
 
 type Config struct {
 	Version    int        `json:"version"`
@@ -71,7 +79,7 @@ func RandomID() string {
 }
 
 func NetworkSettings(value any) (Network, error) {
-	def := Network{LanEnabled: false, Port: 7777}
+	def := Network{LanEnabled: false, Port: DefaultPort}
 	if value == nil {
 		return def, nil
 	}
@@ -151,7 +159,7 @@ func Load(dataDir string, key []byte) (*Config, error) {
 				LocalToken: RandomToken(),
 				Providers:  make([]Provider, 0, len(presets)),
 				Aliases:    []Alias{},
-				Network:    Network{LanEnabled: false, Port: 7777},
+				Network:    Network{LanEnabled: false, Port: DefaultPort},
 			}
 			for _, p := range presets {
 				p.APIKey = ""
@@ -313,7 +321,13 @@ func ValidateBaseURL(value any) (string, error) {
 	if err != nil {
 		return "", apperr.New(400, "URL de base invalide.")
 	}
-	local := u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost" || u.Hostname() == "::1"
+	// Le nom de bouclage est insensible a la casse : un nom de machine
+	// « Localhost » ou une URL recopiee avec une majuscule est la meme cible
+	// locale. Les adresses litterales restent comparees telles quelles, et un
+	// nom qui ressemble a localhost sans l'etre (localhost.localdomain,
+	// mylocalhost) n'est pas accepte : il passerait par HTTPS.
+	host := u.Hostname()
+	local := host == "127.0.0.1" || host == "::1" || strings.EqualFold(host, "localhost")
 	if (u.Scheme != "https" && !(u.Scheme == "http" && local)) || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return "", apperr.New(400, "Utilisez HTTPS, ou HTTP pour un fournisseur sur localhost. Aucun identifiant ni paramètre dans l’URL.")
 	}

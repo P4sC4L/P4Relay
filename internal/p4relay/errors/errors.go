@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 )
 
@@ -94,9 +95,25 @@ func ReadJSONBody(r *http.Request) (map[string]any, error) {
 	return obj, nil
 }
 
+// isJSONBody dit si le corps doit etre interprete comme du JSON.
+//
+// L'ancienne comparaison par prefixe, sensible a la casse, rejetait
+// « Application/JSON » et acceptait « application/jsonBAD ». ParseMediaType
+// separe le type de ses parametres (charset, ...) et normalise le type en
+// minuscules : la comparaison devient exacte. Un en-tete absent, malformé ou
+// d'un autre type est refuse, comme avant : le 415 est le contrat. Un type
+// « +json » (application/vnd.api+json par exemple) n'est pas etendu ici, le
+// client doit envoyer application/json.
 func isJSONBody(r *http.Request) bool {
 	ct := r.Header.Get("Content-Type")
-	return len(ct) >= len("application/json") && ct[:len("application/json")] == "application/json"
+	if ct == "" {
+		return false
+	}
+	base, _, err := mime.ParseMediaType(ct)
+	if err != nil {
+		return false
+	}
+	return base == "application/json"
 }
 
 func IsPlainObject(v any) bool {
