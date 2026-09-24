@@ -31,9 +31,36 @@ type Deps interface {
 	StopUpstream()
 }
 
+// Motifs des routes parametrables, compiles a l'initialisation du paquet.
+var (
+	providerModelsRoute = regexp.MustCompile(`^/api/providers/([^/]+)/models$`)
+	providerDeleteRoute = regexp.MustCompile(`^/api/providers/([^/]+)$`)
+	aliasDeleteRoute    = regexp.MustCompile(`^/api/aliases/([^/]+)$`)
+)
+
 func Run(d Deps, w http.ResponseWriter, r *http.Request, route string, addresses []string) {
 	if r.Header.Get("X-P4-Local") != "1" {
 		panic(apperr.New(403, "Ouvrez l’interface locale pour administrer la passerelle."))
+	}
+	// pathID porte l'identifiant de la derniere route parametree testee.
+	// matches verifie la methode, puis le motif, en une seule evaluation :
+	// FindStringSubmatch repond a la fois a la question « est-ce cette route »
+	// et a celle « quel est l'identifiant », la ou l'ancien routeur compilait
+	// deux fois le meme motif par requete. Un cas non declenche laisse pathID
+	// vide, et un cas declenche l'a toujours rempli : le corps du cas n'a donc
+	// jamais a re-interroger le motif, ni a verifier la longueur du resultat.
+	var pathID string
+	matches := func(re *regexp.Regexp, methodOK bool) bool {
+		pathID = ""
+		if !methodOK {
+			return false
+		}
+		m := re.FindStringSubmatch(r.URL.Path)
+		if m == nil {
+			return false
+		}
+		pathID = m[1]
+		return true
 	}
 	switch {
 	case route == "/api/shutdown" && r.Method == "POST":
@@ -67,12 +94,18 @@ func Run(d Deps, w http.ResponseWriter, r *http.Request, route string, addresses
 		state["networkStatus"] = map[string]any{
 			"host":            d.Host(),
 			"port":            d.Port(),
+			"defaultPort":     config.DefaultPort,
 			"lanEnabled":      lanEnabled,
 			"portOverride":    d.PortOverride(),
 			"lanUrls":         lanUrls,
 			"restartRequired": lanEnabled != cfg.Network.LanEnabled || d.Port() != configuredPort,
 			"nextLocalUrl":    fmt.Sprintf("http://127.0.0.1:%d", configuredPort),
 		}
+		// logPageSize : le front ne doit pas avoir a connaitre la taille de
+		// page du journal pour compter ses pages. /api/logs la renvoie deja,
+		// mais /api/state sert a l'affichage initial et au compteur, et une
+		// valeur calculee ici ne peut plus diverger de celle du serveur.
+		state["logPageSize"] = journal.PageSize
 		apperr.WriteJSON(w, 200, state)
 	case route == "/api/network" && r.Method == "POST":
 		input, err := apperr.ReadJSONBody(r)
@@ -197,9 +230,8 @@ func Run(d Deps, w http.ResponseWriter, r *http.Request, route string, addresses
 			panic(err)
 		}
 		apperr.WriteJSON(w, 200, result)
-	case routeMatches(r, `^/api/providers/([^/]+)/models$`, r.Method == "GET"):
-		m := regexp.MustCompile(`^/api/providers/([^/]+)/models$`).FindStringSubmatch(route)
-		id := m[1]
+	case matches(providerModelsRoute, r.Method == "GET"):
+		id := pathID
 		p, err := d.ProviderFor(id)
 		if err != nil {
 			panic(err)
@@ -273,9 +305,8 @@ func Run(d Deps, w http.ResponseWriter, r *http.Request, route string, addresses
 			after = lastID
 		}
 		apperr.WriteJSON(w, 200, map[string]any{"data": allModels})
-	case routeMatches(r, `^/api/providers/([^/]+)$`, r.Method == "DELETE"):
-		m := regexp.MustCompile(`^/api/providers/([^/]+)$`).FindStringSubmatch(route)
-		id := m[1]
+	case matches(providerDeleteRoute, r.Method == "DELETE"):
+		id := pathID
 		_, err := d.Store().Mutate(func(next *config.Config) (any, error) {
 			for _, a := range next.Aliases {
 				if a.ProviderID == id {
@@ -375,9 +406,8 @@ func Run(d Deps, w http.ResponseWriter, r *http.Request, route string, addresses
 			panic(err)
 		}
 		apperr.WriteJSON(w, 200, result)
-	case routeMatches(r, `^/api/aliases/([^/]+)$`, r.Method == "DELETE"):
-		m := regexp.MustCompile(`^/api/aliases/([^/]+)$`).FindStringSubmatch(route)
-		id := m[1]
+	case matches(aliasDeleteRoute, r.Method == "DELETE"):
+		id := pathID
 		_, err := d.Store().Mutate(func(next *config.Config) (any, error) {
 			found := false
 			for _, a := range next.Aliases {
@@ -417,13 +447,6 @@ func Run(d Deps, w http.ResponseWriter, r *http.Request, route string, addresses
 	default:
 		panic(apperr.New(404, "Route d’administration introuvable."))
 	}
-}
-
-func routeMatches(r *http.Request, pattern string, methodOK bool) bool {
-	if !methodOK {
-		return false
-	}
-	return regexp.MustCompile(pattern).MatchString(r.URL.Path)
 }
 
 func finishShutdown(d Deps) {

@@ -427,7 +427,14 @@ func ToChatRequest(input map[string]any, targetModel, kind string) (map[string]a
 		}
 	}
 	if cm, present := input["context_management"]; present {
-		cmObj, _ := cm.(map[string]any)
+		// Un champ present doit etre un objet. Sans ce controle, l'assertion
+		// echouait en silence, cmObj valait nil, la lecture de cmObj["edits"]
+		// ne paniquait pas, edits restait vide : aucune edition n'etait
+		// verifiee et une requete invalide passait pour conforme.
+		cmObj, ok := cm.(map[string]any)
+		if !ok {
+			return nil, invalid("context_management doit être un objet.")
+		}
 		edits, _ := apperr.AsArray(cmObj["edits"])
 		for _, e := range edits {
 			eObj, _ := e.(map[string]any)
@@ -936,29 +943,24 @@ func EstimateInputTokens(request map[string]any) int {
 }
 
 // marshalWithReplacer marshals while replacing image_url nodes (mirrors the JS replacer).
+//
+// marshalReplaced fait tout le travail de copie : il reconstruit chaque objet
+// et chaque tableau traverses, remplace les noeuds image_url a n'importe quelle
+// profondeur et rend les scalaires tels quels. Les copies intermediaires de
+// l'entree (map puis slice) ne faisaient donc que dupliquer ce travail sans
+// changer le resultat : elles ont ete retirees. Seul le cas « image_url passe
+// a la racine » est traite ici, parce qu'il court-circuite la recursion et
+// fixe le nombre d'appels au replacer.
 func marshalWithReplacer(v any, replacer func(any) any) ([]byte, error) {
-	switch t := v.(type) {
-	case map[string]any:
-		if t["type"] == "image_url" {
-			return json.Marshal(replacer(v))
-		}
-		m := make(map[string]any, len(t))
-		for k, val := range t {
-			m[k] = val
-		}
-		buf, err := json.Marshal(marshalReplaced(m, replacer))
-		return buf, err
-	case []any:
-		out := make([]any, len(t))
-		for i, e := range t {
-			out[i] = e
-		}
-		return json.Marshal(marshalReplaced(out, replacer))
-	default:
-		return json.Marshal(v)
+	if obj, ok := v.(map[string]any); ok && obj["type"] == "image_url" {
+		return json.Marshal(replacer(v))
 	}
+	return json.Marshal(marshalReplaced(v, replacer))
 }
 
+// marshalReplaced copie recursivement v en appliquant replacer a tout objet
+// "type": "image_url". L'entree n'est jamais mutee : chaque objet et chaque
+// tableau rencontre est reconstruit.
 func marshalReplaced(v any, replacer func(any) any) any {
 	switch t := v.(type) {
 	case map[string]any:
