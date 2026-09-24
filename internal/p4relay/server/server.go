@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"fmt"
@@ -23,7 +24,14 @@ import (
 )
 
 // Version est la version affichee par /health.
-const Version = "1.1.2"
+const Version = "1.1.3"
+
+// versionPlaceholder est la graine presentee par index.html. Elle est remplacee
+// par Version a chaque reponse : la version affichee par l'interface ne peut
+// plus diverger de celle du binaire, et il n'y a plus de second endroit ou la
+// mettre a jour. Si la graine survit dans la reponse, c'est que la substitution
+// a saute (une page servie ailleurs que par le routeur) : l'erreur est visible.
+const versionPlaceholder = "__P4_VERSION__"
 
 type Gateway struct {
 	store        *config.Store
@@ -366,6 +374,9 @@ func (g *Gateway) Handle(w http.ResponseWriter, r *http.Request) {
 			data, err := web.FS.ReadFile("public/" + sf[0])
 			if err != nil {
 				panic(apperr.New(404, "Page introuvable.", "not_found"))
+			}
+			if sf[0] == "index.html" {
+				data = bytes.ReplaceAll(data, []byte(versionPlaceholder), []byte(Version))
 			}
 			w.Header().Set("Content-Type", sf[1]+"; charset=utf-8")
 			w.Header().Set("Cache-Control", "no-cache")
