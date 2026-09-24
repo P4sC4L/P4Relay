@@ -1,0 +1,50 @@
+# P4Relay — validation des corrections de l'audit
+
+Rapport établi le 24 septembre 2026, en application du *Cahier de tâches pour
+agent de code*. Chaque ligne indique un constat vérifié dans le dépôt réel, les
+fichiers effectivement modifiés et la vérification réellement exécutée.
+
+Les tests unitaires écrits pour l'occasion ne sont **pas** dans ce dépôt
+(convention du projet : dépôt sans fichiers de test). Ils sont conservés à
+côté, avec les scripts de validation, et rejouables sur copie.
+
+## Tableau de suivi
+
+| ID | État | Fichiers réels modifiés | Vérification et résultat | Réserve ou justification |
+|---|---|---|---|---|
+| V00 | Terminé | — | `go version` = go1.27.1, `go.mod` = `go 1.27`, `GOTOOLCHAIN=auto`, `CGO_ENABLED=0`. `go list`, `build`, `vet`, `gofmt -l` propres **avant** toute modification. 10 fichiers `.go`, 4 paquets + `cmd`. | `go test -race` indisponible : exige cgo, gcc absent. La preuve de T04 est donc déterministe, pas probabiliste. |
+| T01 | Terminé | `internal/p4relay/proxy/proxy.go` | Reproduit sur binaire avant correction : JSON amont invalide et événement d'erreur du fournisseur donnaient HTTP 200 tronqué, journal en 200. Après : événement `error` reçu par le client, journal en 502. 16/16 scénarios live, 13 tests unitaires. | Le `recover` renvoie désormais l'erreur (`(err error)` nommé) ; les paniques inattendues sont remises en circulation. `Scanner.Err()` est lu. Une protection équivalente a été ajoutée autour des deux convertisseurs Anthropic, qui paniquaient après envoi des en-têtes (événement > 16 Mio). |
+| T02 | Terminé | `cmd/p4relay/main.go` | Fournisseur simulé bloqué 60 s : connexion amont fermée 0,2 s après l'arrêt (2,70 s au lieu de 60), appel journalisé en 502 et persisté. Sur le binaire non corrigé : aucune trace de l'appel dans le journal. Test blanc sur `wireCancellation` + contre-test sans raccordement. | `srv.BaseContext` branché sur le contexte racine, `stop()` appelé avant `srv.Close()` dans le gestionnaire de signal. La fermeture par signal annule aussi les connexions : c'est le test blanc qui isole le raccordement. |
+| T03 | Terminé | `internal/p4relay/crypto/crypto.go` | 9 tests : migration réussie et clé identique, config de test déchiffrable, deux fichiers présents → clé courante conservée, initialisation légitime préservée, fichier corrompu non remplacé. Échec de renommage simulé (droits retirés) : erreur remontée nommant les deux fichiers, ancienne clé intacte, **aucune nouvelle clé créée**. | `promoteLegacyKeyFile` retourne une erreur ; `os.Stat` distingue `os.ErrNotExist` d'une erreur d'accès ou d'E/S. Le cas « les deux fichiers existent » est laissé en place sans fusion, comme avant, et documenté par test. |
+| T04 | Terminé | `internal/p4relay/journal/journal.go` | 10 tests, dont deux ordres forcés (flush avant effacement, effacement avant flush) : aucune entrée ressuscitée, en mémoire ni sur disque. Entrées enregistrées après effacement conservées. Live : fichier absent après un cycle de flush complet, stats à zéro, rechargement après redémarrage. | `flush` prend `saveMu` avant `mu` et le garde jusqu'à la fin de l'écriture. Une sauvegarde échouée remet `dirty` à true (pas de perte silencieuse). Le test d'ordonnancement est explicite : le détecteur de courses, indisponible ici, n'aurait rien prouvé. |
+| T05 | Terminé | `internal/p4relay/server/server.go` | 5 tests + live : même 404 pour une page inconnue, même 401 OpenAI sur `/v1/chat/completions`, même 401 Anthropic sur `/v1/messages`, `/health` inchangé, requête normale sans seconde écriture. | Constat confirmé : `failed` ne pouvait être vrai que dans la branche déjà traitée. Branche inatteignable retirée. Ajout d'un `log.Printf` sur les paniques inattendues, qui sans lui disparaissaient sans trace. |
+| T06 | Décision : conservée et dépréciée | `internal/p4relay/journal/journal.go` | `git grep` sur tout le dépôt : aucun appel de production. Le paquet est sous `internal/`, donc non importable hors du module — pas de consommateur externe possible. Les seuls appelants sont les tests conservés hors dépôt, qui s'en servent d'observateur de l'anneau. | Supprimer imposerait de réécrire cinq tests utiles et ne retirerait qu'une méthode sans risque. Marquée `Deprecated:` avec renvoi vers `Page`, et la raison de conservation. Ordre `/api/logs` (récent → ancien) vérifié inchangé. |
+| T07 | Terminé | `internal/p4relay/admin/admin.go` | 8 tests de tableau de routes + live : mêmes identifiants capturés ; identifiant manquant, segment supplémentaire et mauvaise méthode donnent 404 ; `DELETE /api/providers/{id}/models` ne déborde pas sur la suppression ; en-tête local toujours exigé. | Trois motifs compilés à l'initialisation, une seule évaluation par requête (`FindStringSubmatch` décide de la route **et** fournit l'identifiant). `routeMatches`, sans appelant, a été supprimé. |
+| T08 | Terminé | `internal/p4relay/anthropic/anthropic.go` | 4 tests : sortie identique à une référence construite par une voie distincte (objets, tableaux, scalaires, images à la racine et nichées), entrée non mutée, un seul appel au remplaçant pour une image à la racine. | Les copies intermédiaires de la map et du slice ont été retirées. **Le dispatch « image_url à la racine » a été conservé** : il court-circuite la recursion et borne le nombre d'appels au remplaçant, contrairement à ce que laissait penser le constat. |
+| T09 | Terminé | `internal/p4relay/anthropic/anthropic.go` | Live : chaîne, tableau, nombre, booléen et `null` rejetés en 400 avec `context_management doit être un objet.` ; champ absent et objet conforme acceptés comme avant ; validation des `edits` inchangée (édition inconnue toujours refusée). | Le booléen d'assertion est vérifié. Aucune validation supplémentaire inventée : `edits` absent ou de mauvais type garde son comportement antérieur. |
+| T10 | Terminé | `internal/p4relay/web/public/app.js`, `internal/p4relay/admin/admin.go` | 13 cas exécutés sous Node contre le code réel du fichier : 101/50 → 3 pages, 100/100 → 1, total nul → 1, taille absente/0/négative/non entière/non numérique/`null` → repli documenté, jamais de division par zéro. | La taille reçue est mémorisée (`state.logPageSize`, repli sur `pageSize` de `/api/logs`) ; `/api/state` publie `logPageSize`. Seule une taille entière strictement positive est acceptée. |
+| T11 | Terminé (facultatif retenu) | `internal/p4relay/config/config.go` | Tests : `localhost`, `LocalHost`, `LOCALHOST`, `127.0.0.1`, `[::1]` acceptés ; `localhost.localdomain`, `mylocalhost`, `notlocalhost` refusés ; HTTPS distant accepté, HTTP distant refusé ; identifiant, requête et fragment toujours refusés. | `strings.EqualFold`. Les adresses littérales restent comparées telles quelles. |
+| T12 | Terminé (facultatif retenu) | `internal/p4relay/errors/errors.go` | Tests et live : variantes de casse et `charset=utf-8` acceptées ; en-tête vide, `text/plain`, `application/jsonBAD`, `application/jsonp`, `x-application/json`, en-tête malformé refusés en 415 ; limite de 16 Mio, `JSON invalide` et objet requis inchangés. | `mime.ParseMediaType` + égalité exacte, plutôt que `EqualFold` sur un préfixe (qui aurait accepté `application/jsonBAD`). Un en-tête malformé est refusé. Le suffixe `+json` n'est **pas** étendu, hors du contrat existant. |
+| T13 | Terminé (facultatif retenu) | `internal/p4relay/config/config.go`, `internal/p4relay/admin/admin.go`, `internal/p4relay/web/public/app.js` | Live : `networkStatus.defaultPort` = 7777 alors que le port actif est 8095, `baseUrl` et écoute reflètent le port réel ; défaut inchangé, port personnalisé conservé. | Constante `config.DefaultPort`, utilisée par les deux défauts Go. Le front ne contient plus le texte « 7777 » en dur et distingue port par défaut (`defaultPort`) et port actif (`port`). Extension strictement additive de la réponse. |
+| T14 | Terminé (facultatif retenu) | `internal/p4relay/proxy/proxy.go` | Tests T01 rejoués : succès journalisé 200 ; erreur amont, annulation et erreur de streaming gardent leur statut ; aucun statut nul. | `status = 200` posé seulement après un `doProxy` réussi. Le statut HTTP déjà transmis en cours de flux reste distinct du statut journalisé, comme l'exigeait la remarque. |
+| V01 | Terminé avec réserves | — | `gofmt -l` propre · `go vet ./...` sans alerte · `go build ./...` OK · builds croisés linux/amd64, linux/arm64, windows/386, darwin/arm64 OK · `node --check app.js` OK · 40/40 vérifications live sur l'API · 16/16 scénarios de flux · suites de tests par paquet (proxy 13, journal 27 avec les tests existants, crypto 9, admin 8, anthropic 6, server 5, config 6, errors 3, cmd 3) · interface : pages servies, graine de version remplacée, journal et paramètres accessibles. | **Contrôle non exécuté** : `go test -race` (cgo/gcc indisponibles). **Non testé en direct** : fournisseur Anthropic réel (les convertisseurs sont couverts par tests unitaires et par la simulation, pas par un appel payant). Aucun secret dans les tests : fournisseurs simulés, clés fictives, répertoires temporaires. |
+
+## Défaut supplémentaire trouvé hors liste
+
+Une erreur de fournisseur **hors streaming** (alias inconnu, fournisseur
+injoignable, réponse invalide) remontait bien dans le journal, mais le client
+recevait un **HTTP 200 vide** : le `defer` de `Run` calculait un statut et ne
+l'écrivait jamais. Reproduit (code 200 attendu 401) et corrigé avec T01 — une
+erreur est écrite au client tant qu'aucun octet n'est parti, au format du
+protocole appelé (OpenAI ou Anthropic). Après le début d'un flux, le statut HTTP
+est parti : seul l'événement d'erreur SSE est possible, et le journal garde la
+trace de l'échec.
+
+## Ce qui n'a pas été changé
+
+`web.go`, `index.html`, `style.css` : aucune correction demandée, aucun défaut
+constaté. `go.mod` : `go 1.27` conservé, la toolchain effective (go1.27.1) le
+satisfait. Les formats d'API, les routes, les données persistées et les
+signatures partagées (`Deps`, `Journal`, `SSEWriter`) sont inchangés ; les deux
+seules extensions sont additives (`logPageSize` et `defaultPort` dans
+`/api/state`).
