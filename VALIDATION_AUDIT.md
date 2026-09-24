@@ -40,6 +40,13 @@ protocole appelé (OpenAI ou Anthropic). Après le début d'un flux, le statut H
 est parti : seul l'événement d'erreur SSE est possible, et le journal garde la
 trace de l'échec.
 
+Origine vérifiée : ce défaut vient du **premier commit du port Go** (`68cfe61`),
+et non d'une régression introduite par un refactoring ultérieur — il a donc été
+présent dans tous les binaires livrés. Une note de travail le disait corrigé le
+20/09 au moyen d'un flag `wrote` ; ce flag n'existe dans aucun commit
+(`git log --all -S "wrote"` ne rencontre que des noms de fichiers). Vérifier un
+constat dans le dépôt et à l'exécution plutôt que dans une note.
+
 ## Ce qui n'a pas été changé
 
 `web.go`, `index.html`, `style.css` : aucune correction demandée, aucun défaut
