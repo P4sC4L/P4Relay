@@ -178,6 +178,13 @@ func (j *Journal) at(i int) Entry {
 
 // Snapshot renvoie les limit entrees les plus recentes, reordonnees en ordre
 // chronologique (la plus ancienne des limit renvoyees en premier).
+//
+// Deprecated: aucun appelant de production. Utiliser Page(page, size), qui
+// rend l'ordre recent vers ancien attendu par l'interface et le total en meme
+// temps. L'ordre inverse de Snapshot a deja provoque une regression
+// d'affichage sur /api/state : cette methode n'est conservee que comme
+// observateur de l'anneau pour les tests, ou un equivalent Page(1, n) rendu
+// dans l'autre sens ne rendrait pas les memes verifications.
 func (j *Journal) Snapshot(limit int) []Entry {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -236,7 +243,9 @@ func (j *Journal) Stats() map[string]any {
 
 // Clear vide le journal, remet les statistiques a zero et supprime le fichier
 // persiste. L'ordre des verrous (saveMu puis mu) est identique a celui de
-// flush : un flush deja parti ne peut donc pas recreer le fichier efface.
+// flush, qui tient saveMu pendant toute son ecriture : un flush deja parti ne
+// peut donc pas recreer le fichier efface, et un flush qui demarre apres
+// l'effacement ne trouve plus rien a ecrire.
 func (j *Journal) Clear() {
 	j.saveMu.Lock()
 	defer j.saveMu.Unlock()
@@ -285,8 +294,18 @@ func (j *Journal) flushLoop() {
 }
 
 // flush ne fait rien si rien n'a change depuis le dernier passage ; sinon il
-// copie les donnees sous verrou puis ecrit hors verrou.
+// copie les donnees sous verrou puis ecrit hors du verrou de l'anneau.
+//
+// Ordre des verrous : saveMu d'abord, mu ensuite, comme dans Clear, et saveMu
+// est garde jusqu'a la fin de l'ecriture. Prendre mu seul d'abord laissait une
+// fenetre : Clear pouvait vider le journal et supprimer le fichier pendant que
+// flush tenait deja sa copie, puis flush reimposait les anciennes entrees sur
+// disque. Un effacement demandé est donc définitif : soit il précède le flush
+// (le journal n'est plus dirty, le flush ne fait rien), soit il l'attend.
 func (j *Journal) flush() {
+	j.saveMu.Lock()
+	defer j.saveMu.Unlock()
+
 	j.mu.Lock()
 	if !j.dirty {
 		j.mu.Unlock()
@@ -300,23 +319,35 @@ func (j *Journal) flush() {
 	j.dirty = false
 	j.mu.Unlock()
 
-	j.saveMu.Lock()
-	defer j.saveMu.Unlock()
-	data, err := json.Marshal(entries)
-	if err != nil {
-		return
-	}
-	tmpPath := j.path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, filePerm); err != nil {
+	if err := j.writeEntries(entries); err != nil {
+		// Une sauvegarde qui échoue ne doit pas effacer silencieusement le
+		// besoin de persister : on redemande un passage ultérieur. Les entrées
+		// ajoutées pendant l'écriture avaient déjà remis dirty à true.
+		j.mu.Lock()
+		if j.count > 0 {
+			j.dirty = true
+		}
+		j.mu.Unlock()
 		log.Printf("journal: %v", err)
-		return
-	}
-	// Renommage atomique : un crash en cours d'ecriture laisse l'ancien
-	// journal intact plutot qu'un fichier tronque.
-	if err := os.Rename(tmpPath, j.path); err != nil {
-		log.Printf("journal: %v", err)
-		_ = os.Remove(tmpPath)
 		return
 	}
 	log.Printf("journal: %d entrées conservées dans %s", total, j.path)
+}
+
+// writeEntries ecrit la photo du journal en memoire, puis la remplace de facon
+// atomique. Une ecriture partielle ne peut donc pas laisser un journal tronque.
+func (j *Journal) writeEntries(entries []Entry) error {
+	data, err := json.Marshal(entries)
+	if err != nil {
+		return err
+	}
+	tmpPath := j.path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, filePerm); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, j.path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
 }

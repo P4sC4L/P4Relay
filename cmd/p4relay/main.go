@@ -19,6 +19,20 @@ import (
 	"p4relay/internal/p4relay/server"
 )
 
+// wireCancellation cree le contexte racine de la passerelle et le raccorde au
+// serveur HTTP, puis declare l'annulateur a la passerelle. Chaque requete
+// entrante derive de BaseContext, donc de ce contexte : les appels amont bats
+// sur r.Context() sont annules des que la fonction retournee est appelee, que
+// ce soit par un signal ou par /api/shutdown via Gateway.StopUpstream. Sans ce
+// raccordement, stop() n'annulait qu'un contexte que rien ne consultait et un
+// appel amont bloque attendait la fin du delai fournisseur.
+func wireCancellation(g *server.Gateway, srv *http.Server) context.CancelFunc {
+	ctx, stop := context.WithCancel(context.Background())
+	srv.BaseContext = func(net.Listener) context.Context { return ctx }
+	g.SetStopUpstream(stop)
+	return stop
+}
+
 func main() {
 	dataDir := os.Getenv("P4_DATA_DIR")
 	if dataDir == "" {
@@ -43,14 +57,17 @@ func main() {
 		Handler:           http.HandlerFunc(g.Handle),
 	}
 	g.SetServer(srv)
-	_, stop := context.WithCancel(context.Background())
-	g.SetStopUpstream(stop)
+	stop := wireCancellation(g, srv)
+	defer stop()
 	go func() {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 		<-sig
-		srv.Close()
+		// Annulation d'abord, fermeture ensuite : les handlers en cours voient
+		// leurs requetes amont coupees immediatement, au lieu d'attendre la
+		// fermeture brutale des connexions.
 		stop()
+		srv.Close()
 	}()
 	fmt.Printf("P4Relay\nInterface : http://127.0.0.1:%d\nAPI       : http://127.0.0.1:%d/v1\n\u00c9coute    : %s:%d\nCtrl+C pour arr\u00eater.\n", g.Port(), g.Port(), g.Host(), g.Port())
 	if len(os.Args) > 1 && os.Args[1] == "--open-browser" {

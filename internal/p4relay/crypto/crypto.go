@@ -66,16 +66,36 @@ func masterKeyFromEnv() ([]byte, bool, error) {
 // promoteLegacyKeyFile renomme l'ancien fichier P4RELAY_MASTER_KEY en key
 // (migration transparente). S'il existe déjà un fichier key, l'ancien est
 // ignoré : la clé courante prévaut.
-func promoteLegacyKeyFile(dataDir string) {
+//
+// Le résultat est une erreur, pas un signal muet. Une migration qui échoue
+// laisse sur le disque une clé avec laquelle la configuration chiffrée a été
+// produite : la continuer pour générer une nouvelle clé rendrait toutes les
+// clés API indéchiffrables, sans message explicite. L'appelant doit donc
+// s'arrêter sur toute erreur renvoyée.
+func promoteLegacyKeyFile(dataDir string) error {
 	legacy := filepath.Join(dataDir, masterKeyLegacyFileName)
 	current := filepath.Join(dataDir, masterKeyFileName)
 	if _, err := os.Stat(legacy); err != nil {
-		return
+		if os.IsNotExist(err) {
+			// Absence normale : rien à migrer.
+			return nil
+		}
+		// Une erreur d'accès ou d'E/S n'est pas une absence : on ne peut pas
+		// conclure qu'il n'y a rien à migrer.
+		return fmt.Errorf("impossible de vérifier la présence de %s : %v", masterKeyLegacyFileName, err)
 	}
 	if _, err := os.Stat(current); err == nil {
-		return
+		// Les deux fichiers existent : la clé courante a la priorité, l'ancien
+		// est laissé en place (son contenu n'est plus utilisé).
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("impossible de vérifier la présence de %s : %v", masterKeyFileName, err)
 	}
-	_ = os.Rename(legacy, current)
+	if err := os.Rename(legacy, current); err != nil {
+		return fmt.Errorf("migration de l'ancien fichier de clé %s vers %s impossible : %v",
+			masterKeyLegacyFileName, masterKeyFileName, err)
+	}
+	return nil
 }
 
 // loadMasterKey résout la clé maîtresse : variable d'environnement, sinon
@@ -87,7 +107,9 @@ func LoadMasterKey(dataDir string) ([]byte, error) {
 	} else if ok {
 		return key, nil
 	}
-	promoteLegacyKeyFile(dataDir)
+	if err := promoteLegacyKeyFile(dataDir); err != nil {
+		return nil, err
+	}
 	path := filepath.Join(dataDir, masterKeyFileName)
 	raw, err := os.ReadFile(path)
 	if err == nil {

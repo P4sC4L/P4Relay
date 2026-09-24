@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -24,7 +25,7 @@ import (
 )
 
 // Version est la version affichee par /health.
-const Version = "1.1.3"
+const Version = "1.2.0"
 
 // versionPlaceholder est la graine presentee par index.html. Elle est remplacee
 // par Version a chaque reponse : la version affichee par l'interface ne peut
@@ -247,28 +248,24 @@ func (g *Gateway) Handle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Content-Security-Policy", cspHeader)
 
-	var failed bool
-	var apiErr *apperr.ApiError
+	// Une panique ne peut etre recuperee qu'a l'interieur du defer : aucune
+	// variable portee par la closure ne peut la signaler depuis le corps du
+	// handler, et l'ancienne branche « else if failed » etait donc inatteignable.
+	// Le traitement tient en deux cas : une erreur API connue, qui porte son
+	// statut et son format, et tout le reste, qui devient un 500 generique.
 	defer func() {
-		if p := recover(); p != nil {
-			var ok bool
-			switch e := p.(type) {
-			case *apperr.ApiError:
-				apiErr = e
-				ok = true
-			case error:
-				failed = true
-			default:
-				failed = true
-			}
-			if ok {
-				g.writeError(w, r, apiErr)
-			} else {
-				g.writeError(w, r, apperr.New(500, "Erreur interne.", "internal"))
-			}
-		} else if failed {
-			g.writeError(w, r, apperr.New(500, "Erreur interne.", "internal"))
+		p := recover()
+		if p == nil {
+			return
 		}
+		if apiErr, ok := p.(*apperr.ApiError); ok {
+			g.writeError(w, r, apiErr)
+			return
+		}
+		// Panique inattendue : la reponse reste un 500, mais le detail part dans
+		// la sortie de la console, sinon elle disparait sans laisser de trace.
+		log.Printf("p4relay: panique recuperee sur %s %v : %v", r.Method, r.URL.Path, p)
+		g.writeError(w, r, apperr.New(500, "Erreur interne.", "internal"))
 	}()
 
 	// Host / origin checks.

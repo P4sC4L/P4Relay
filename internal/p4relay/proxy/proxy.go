@@ -89,12 +89,64 @@ func newLineScanner(body io.Reader) *lineScanner {
 }
 
 func (s *lineScanner) Scan() bool { return s.sc.Scan() }
+
+// Err signale une erreur de lecture autre que la fin normale du flux.
+func (s *lineScanner) Err() error { return s.sc.Err() }
 func (s *lineScanner) Text() string {
 	return s.sc.Text()
 }
 
+// responseGuard repond aux deux questions que le proxy doit se poser quand une
+// erreur survient : la reponse a-t-elle deja commence (apres le premier octet
+// d'un flux SSE, le statut HTTP est parti et vouloir le remplacer serait faux),
+// et sait-on reellement flusher. canFlush reporte la capacite du writer reel,
+// pas celle de l'enveloppe.
+type responseGuard struct {
+	http.ResponseWriter
+	headerSent bool
+	canFlush   bool
+}
+
+func (g *responseGuard) WriteHeader(code int) {
+	g.headerSent = true
+	g.ResponseWriter.WriteHeader(code)
+}
+
+func (g *responseGuard) Write(data []byte) (int, error) {
+	g.headerSent = true
+	return g.ResponseWriter.Write(data)
+}
+
+func (g *responseGuard) Flush() {
+	if g.canFlush {
+		g.ResponseWriter.(http.Flusher).Flush()
+	}
+}
+
+// wrappedResponse enveloppe un ResponseWriter sans lui preter un Flusher qu'il
+// n'a pas.
+func wrappedResponse(w http.ResponseWriter) *responseGuard {
+	_, ok := w.(http.Flusher)
+	return &responseGuard{ResponseWriter: w, canFlush: ok}
+}
+
+// canFlushTo dit si un flush est réellement possible, a travers l'enveloppe.
+func canFlushTo(w http.ResponseWriter) bool {
+	if g, ok := w.(*responseGuard); ok {
+		return g.canFlush
+	}
+	_, ok := w.(http.Flusher)
+	return ok
+}
+
 // aliasStream mirrors aliasStream(stream, model): rewrites the model field.
-func aliasStream(body io.Reader, model string, out *anthropic.SSEWriter) error {
+// La valeur de retour est nommee : une panique recuperee ici (JSON amont
+// invalide, evenement d'erreur emis par le fournisseur en cours de flux) doit
+// devenir l'erreur renvoyee, sans quoi l'appelant lirait un flux hache en
+// succes. out.Err reste reserve aux vrais echecs d'ecriture : s'en servir pour
+// memoriser l'erreur applicative muet l'emission de l'evenement d'erreur vers
+// le client.
+func aliasStream(body io.Reader, model string, out *anthropic.SSEWriter) (err error) {
 	scanner := newLineScanner(body)
 	doneSeen := false
 	rewrite := func(line string) string {
@@ -133,22 +185,41 @@ func aliasStream(body io.Reader, model string, out *anthropic.SSEWriter) error {
 	defer func() {
 		if p := recover(); p != nil {
 			if apiErr, ok := p.(*apperr.ApiError); ok {
-				out.Err = apiErr
+				// Erreur attendue : JSON amont invalide ou evenement d'erreur
+				// emis par le fournisseur en cours de flux. Elle devient la
+				// valeur retournee : sans elle, l'appelant lirait un flux
+				// interrompu comme un succes.
+				err = apiErr
+				return
 			}
+			// Panique inattendue : elle n'est pas convertie en succes, elle
+			// est remise en circulation vers le mecanisme superieur.
+			panic(p)
 		}
 	}()
 	for scanner.Scan() {
 		line := strings.TrimSuffix(scanner.Text(), "\r")
 		out.Write([]byte(rewrite(line) + "\n"))
 	}
+	// Une erreur de lecture autre que la fin normale du flux doit etre vue.
+	if serr := scanner.Err(); serr != nil {
+		if out.Err == nil {
+			out.Err = serr
+		}
+		return apperr.New(502, "Lecture du flux du fournisseur interrompue.", "upstream_error")
+	}
 	if !doneSeen {
 		return apperr.New(502, "Le flux du fournisseur s’est interrompu avant sa fin.", "upstream_error")
 	}
-	return nil
+	// out.Err ne porte plus ici que de veritables echecs d'ecriture vers
+	// le client (connexion rompue) : ils ne doivent pas non plus passer
+	// pour un succes.
+	return out.Err
 }
 
 func Run(d Deps, w http.ResponseWriter, r *http.Request, protocol string, countOnly bool) {
 	started := time.Now()
+	w = wrappedResponse(w)
 	var aliasName, providerName, targetModel string
 	status := 500
 	streaming := false
@@ -169,6 +240,16 @@ func Run(d Deps, w http.ResponseWriter, r *http.Request, protocol string, countO
 			status = 499
 		} else if proxyErr != nil {
 			status = 502
+		}
+		// Erreur remontee alors qu'aucun octet n'a ete envoye : le client
+		// doit la recevoir, pas une reponse 200 vide. Apres le debut d'un
+		// flux, le statut HTTP n'est plus modifiable : doProxy a emis un
+		// evenement d'erreur SSE et le journal garde la trace de l'echec.
+		if proxyErr != nil {
+			g := w.(*responseGuard)
+			if !g.headerSent && r.Context().Err() == nil {
+				writeClientError(d, w, protocol, proxyErr)
+			}
 		}
 		d.Record(journal.Entry{
 			ID:         config.RandomID(),
@@ -247,8 +328,13 @@ func Run(d Deps, w http.ResponseWriter, r *http.Request, protocol string, countO
 				proxyErr = apperr.New(400, "Les champs models et route ne sont pas acceptés : utilisez un alias local.")
 				return
 			}
-			status = 200
 			proxyErr = doProxy(d, w, r, ctx, provider, aliasName, targetModel, protocol, countOnly, streaming, input)
+			if proxyErr == nil {
+				// Le succes ne s'ecrit qu'apres un appel reussi : une erreur
+				// amont ne traverse plus Run paree d'un 200. Les erreurs
+				// portant deja leur statut sont reevaluees par le defer.
+				status = 200
+			}
 			return
 		}
 	}
@@ -256,6 +342,25 @@ func Run(d Deps, w http.ResponseWriter, r *http.Request, protocol string, countO
 		proxyErr = apperr.New(404, fmt.Sprintf("Alias inconnu ou désactivé : %s. Ajoutez-le dans l’interface.", name), "model_not_found")
 	}
 }
+
+// writeClientError ecrit une erreur HTTP au format attendu par le client :
+// enveloppe OpenAI pour /v1/chat/completions, enveloppe Anthropic pour
+// /v1/messages et son comptage de tokens. C'est le meme contrat que celui du
+// routeur pour les paniques, et la version JSON des messages d'erreur deja
+// utilises en amont.
+func writeClientError(d Deps, w http.ResponseWriter, protocol string, err error) {
+	var apiErr *apperr.ApiError
+	if !errors.As(err, &apiErr) {
+		apiErr = apperr.New(500, "Erreur interne.", "internal")
+	}
+	msg := d.Redact(apiErr.Message)
+	body := any(apperr.OpenAI(apiErr.Status, msg, apiErr.Code))
+	if protocol == "anthropic" {
+		body = apperr.Anthropic(apiErr.Status, msg)
+	}
+	apperr.WriteJSON(w, apiErr.Status, body)
+}
+
 func orDash(s string) string {
 	if s == "" {
 		return "—"
@@ -360,7 +465,7 @@ func doProxy(d Deps, w http.ResponseWriter, r *http.Request, ctx context.Context
 		if !strings.Contains(ct, "text/event-stream") {
 			return apperr.New(502, "Le fournisseur n’a pas renvoyé de flux SSE.", "upstream_error")
 		}
-		if _, ok := w.(http.Flusher); !ok {
+		if !canFlushTo(w) {
 			return apperr.New(500, "Streaming non disponible.")
 		}
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
@@ -368,28 +473,14 @@ func doProxy(d Deps, w http.ResponseWriter, r *http.Request, ctx context.Context
 		w.Header().Set("X-Accel-Buffering", "no")
 		w.WriteHeader(200)
 		out := &anthropic.SSEWriter{Dst: w}
-		var streamErr error
-		switch {
-		case protocol == "anthropic" && native:
-			streamErr = anthropic.NativeMessageStream(upstream.Body, aliasName, out)
-		case protocol == "anthropic":
-			streamErr = anthropic.ChatToMessageStream(upstream.Body, aliasName, out)
-		default:
-			streamErr = aliasStream(upstream.Body, aliasName, out)
-		}
+		streamErr := runStream(protocol, native, upstream.Body, aliasName, out)
 		if streamErr != nil {
-			// Headers already sent: emit an error event and close.
-			st := 502
-			var apiErr *apperr.ApiError
-			if errors.As(streamErr, &apiErr) {
-				st = apiErr.Status
-			}
-			msg := d.Redact(apiErrorMessage(streamErr))
-			if protocol == "anthropic" {
-				out.Write([]byte(anthropic.SSEEncode(apperr.Anthropic(st, msg))))
-			} else {
-				out.Write([]byte("data: " + anthropic.MustJSON(map[string]any{"error": map[string]any{"message": msg, "type": "upstream_error"}}) + "\n\n"))
-			}
+			// Les en-tetes sont partis : le statut HTTP ne peut plus etre
+			// remplace, l'erreur voyage donc dans le flux, au format du
+			// protocole appele. Si la connexion est rompue (out.Err),
+			// l'emission est muette et l'erreur remontee telle quelle :
+			// c'est bien un echec, pas un succes.
+			emitStreamError(d, protocol, out, streamErr)
 		}
 		return streamErr
 	}
@@ -431,6 +522,48 @@ func doProxy(d Deps, w http.ResponseWriter, r *http.Request, ctx context.Context
 	apperr.WriteJSON(w, 200, result)
 	return nil
 }
+
+// runStream lance le transformateur de flux adapte au protocole. Les
+// transformateurs signalent aussi leurs erreurs par panique ( evenement SSE
+// trop volumineux ) : une panique qui atteindrait le routeur apres le debut du
+// flux produirait une seconde reponse sur une connexion deja engagee. Elle est
+// donc convertie ici en erreur de flux, tandis qu'une panique inattendue est
+// remise en circulation.
+func runStream(protocol string, native bool, body io.Reader, aliasName string, out *anthropic.SSEWriter) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			if apiErr, ok := p.(*apperr.ApiError); ok {
+				err = apiErr
+				return
+			}
+			panic(p)
+		}
+	}()
+	switch {
+	case protocol == "anthropic" && native:
+		return anthropic.NativeMessageStream(body, aliasName, out)
+	case protocol == "anthropic":
+		return anthropic.ChatToMessageStream(body, aliasName, out)
+	default:
+		return aliasStream(body, aliasName, out)
+	}
+}
+
+// emitStreamError ecrit l'evenement d'erreur dans un flux deja commence.
+func emitStreamError(d Deps, protocol string, out *anthropic.SSEWriter, streamErr error) {
+	st := 502
+	var apiErr *apperr.ApiError
+	if errors.As(streamErr, &apiErr) {
+		st = apiErr.Status
+	}
+	msg := d.Redact(apiErrorMessage(streamErr))
+	if protocol == "anthropic" {
+		out.Write([]byte(anthropic.SSEEncode(apperr.Anthropic(st, msg))))
+	} else {
+		out.Write([]byte("data: " + anthropic.MustJSON(map[string]any{"error": map[string]any{"message": msg, "type": "upstream_error"}}) + "\n\n"))
+	}
+}
+
 func apiErrorMessage(err error) string {
 	var apiErr *apperr.ApiError
 	if errors.As(err, &apiErr) {
