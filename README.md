@@ -46,6 +46,10 @@ data/                        Configuration locale (ignorée par git — contient
 
 ## Configuration
 
+Le dossier `data/` est **créé automatiquement** au premier lancement, où que
+soit posé l'exécutable (il n'est pas livré avec le dépôt ni avec l'archive).
+Il peut être déplacé ailleurs avec la variable d'environnement `P4_DATA_DIR`.
+
 Le fichier `data/config.json` (créé au premier lancement, **ignoré par git**) contient :
 - le token local d'authentification
 - les fournisseurs et leurs clés API

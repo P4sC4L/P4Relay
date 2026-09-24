@@ -23,7 +23,7 @@ import (
 )
 
 // Version est la version affichee par /health.
-const Version = "1.1.1"
+const Version = "1.1.2"
 
 type Gateway struct {
 	store        *config.Store
@@ -40,6 +40,12 @@ type Gateway struct {
 }
 
 func New(dataDir string) (*Gateway, error) {
+	// Le répertoire de données n'existe ni dans le dépôt git ni dans un dossier
+	// où l'exécutable vient d'être posé : il doit être créé avant la moindre
+	// écriture (data/key, data/config.json, data/journal.log).
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return nil, fmt.Errorf("impossible de créer le dossier de données %s : %v", dataDir, err)
+	}
 	masterKey, err := crypto.LoadMasterKey(dataDir)
 	if err != nil {
 		return nil, err
