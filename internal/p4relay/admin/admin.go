@@ -45,7 +45,10 @@ func Run(d Deps, w http.ResponseWriter, r *http.Request, route string, addresses
 		go finishShutdown(d)
 	case route == "/api/state" && r.Method == "GET":
 		cfg := d.Store().Get()
-		logsCopy := d.Journal().Snapshot(journal.PageSize)
+		// Snapshot renvoie desormais les entrees en ordre chronologique ;
+		// le front affiche la liste du plus recent au plus ancien (comme
+		// /api/logs), d'ou Page(1, ...) plutot que Snapshot(PageSize).
+		logsCopy, _ := d.Journal().Page(1, journal.PageSize)
 		stats := d.Journal().Stats()
 		lanEnabled := d.Host() == "0.0.0.0"
 		lanUrls := []string{}
@@ -430,6 +433,9 @@ func finishShutdown(d Deps) {
 	if s := d.Server(); s != nil {
 		_ = s.Close()
 	}
+	// os.Exit ne declenche pas les defer : on force ici la derniere
+	// persistation du journal.
+	d.Journal().Stop()
 	// Exit so the port is released and the gateway can be started again.
 	os.Exit(0)
 }

@@ -30,6 +30,7 @@ func main() {
 		log.Fatal(err)
 	}
 	g.Journal().Load()
+	defer g.Journal().Stop() // dernier flush avant sortie, ne perd pas les entrees en attente
 	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", g.Host(), g.Port()))
 	if err != nil {
 		if strings.Contains(err.Error(), "address already in use") {
