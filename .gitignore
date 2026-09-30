@@ -2,6 +2,8 @@
 P4Relay.exe
 *.exe
 *.exe~
+P4Relay-*/
+P4Relay-*
 
 # Données locales (tokens, clés API) — JAMAIS à commettre
 data/
