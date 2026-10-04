@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -70,10 +69,10 @@ func main() {
 		srv.Close()
 	}()
 	fmt.Printf("P4Relay\nInterface : http://127.0.0.1:%d\nAPI       : http://127.0.0.1:%d/v1\n\u00c9coute    : %s:%d\nCtrl+C pour arr\u00eater.\n", g.Port(), g.Port(), g.Host(), g.Port())
-	if len(os.Args) > 1 && os.Args[1] == "--open-browser" {
-		cmd := exec.Command("explorer.exe", fmt.Sprintf("http://127.0.0.1:%d", g.Port()))
-		_ = cmd.Start()
-	}
+	// Interface : fenêtre d'application dédiée (navigateur Chromium en mode
+	// --app), ou navigateur par défaut à défaut. Désactivable par
+	// P4RELAY_NO_WINDOW=1 ou --no-window (service, script, sans écran).
+	go openInterface(fmt.Sprintf("http://127.0.0.1:%d", g.Port()))
 	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}

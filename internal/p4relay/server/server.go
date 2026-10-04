@@ -25,7 +25,7 @@ import (
 )
 
 // Version est la version affichee par /health.
-const Version = "1.2.0"
+const Version = "1.2.1"
 
 // versionPlaceholder est la graine presentee par index.html. Elle est remplacee
 // par Version a chaque reponse : la version affichee par l'interface ne peut

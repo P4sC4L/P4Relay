@@ -6,7 +6,7 @@ Passerelle IA locale : expose un point d'entrée unique vers vos fournisseurs (O
 
 - **Multi-fournisseurs** : OpenRouter, OpenAI, Anthropic + fournisseurs personnalisés
 - **Alias de modèles** : mappez un nom court vers un modèle/fournisseur cible
-- **Interface web** : dashboard intégré (statut, fournisseurs, alias, terrain d'essai, activité, paramètres)
+- **Interface web** : dashboard intégré (statut, fournisseurs, alias, terrain d'essai, activité, paramètres), ouvert dans sa propre fenêtre d'application
 - **Réseau** : localhost par défaut, option LAN
 - **Sécurité** : token local, chiffrement AES-GCM des clés API au repos (clé maîtresse), clés jamais renvoyées par l'interface
 
@@ -26,6 +26,22 @@ P4Relay.exe
 ```
 
 Le serveur tourne sur `http://127.0.0.1:7777` par défaut.
+
+L'interface s'ouvre automatiquement dans une **fenêtre d'application** dédiée :
+un navigateur Chromium (Edge sous Windows, installé d'office) est lancé en mode
+`--app` avec un profil propre, ce qui donne une fenêtre sans onglets ni barre
+d'adresse, avec sa propre entrée dans la barre des tâches. Sans navigateur
+Chromium, le navigateur par défaut est utilisé.
+
+Pour ne rien ouvrir (service, script, machine sans écran) :
+
+```
+P4Relay.exe --no-window
+set P4RELAY_NO_WINDOW=1 & P4Relay.exe
+```
+
+Pour forcer le navigateur classique plutôt que la fenêtre dédiée :
+`set P4RELAY_BROWSER=1`.
 
 ## Structure
 
