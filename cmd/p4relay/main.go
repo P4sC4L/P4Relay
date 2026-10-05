@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -33,6 +32,10 @@ func wireCancellation(g *server.Gateway, srv *http.Server) context.CancelFunc {
 }
 
 func main() {
+	// Sous Windows, l'exécutable est lié en sous-système GUI : lancé par
+	// double-clic, aucune fenêtre de commande ne s'ouvre. setupConsole rattache
+	// la console du terminal quand il y en a un (voir console_windows.go).
+	setupConsole()
 	dataDir := os.Getenv("P4_DATA_DIR")
 	if dataDir == "" {
 		exe, _ := os.Executable()
@@ -40,16 +43,19 @@ func main() {
 	}
 	g, err := server.New(dataDir)
 	if err != nil {
-		log.Fatal(err)
+		notifyFatal(err.Error())
+		return
 	}
 	g.Journal().Load()
 	defer g.Journal().Stop() // dernier flush avant sortie, ne perd pas les entrees en attente
 	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", g.Host(), g.Port()))
 	if err != nil {
 		if strings.Contains(err.Error(), "address already in use") {
-			log.Fatalf("Le port %d est d\u00e9j\u00e0 utilis\u00e9. Ouvrez http://127.0.0.1:%d ou choisissez un autre PORT.", g.Port(), g.Port())
+			notifyFatal(fmt.Sprintf("Le port %d est déjà utilisé. Ouvrez http://127.0.0.1:%d ou choisissez un autre PORT.", g.Port(), g.Port()))
+			return
 		}
-		log.Fatal(err)
+		notifyFatal(err.Error())
+		return
 	}
 	srv := &http.Server{
 		ReadHeaderTimeout: 10 * time.Second,
@@ -74,6 +80,6 @@ func main() {
 	// P4RELAY_NO_WINDOW=1 ou --no-window (service, script, sans écran).
 	go openInterface(fmt.Sprintf("http://127.0.0.1:%d", g.Port()))
 	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatal(err)
+		notifyFatal(err.Error())
 	}
 }

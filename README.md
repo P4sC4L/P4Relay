@@ -16,7 +16,18 @@ Passerelle IA locale : expose un point d'entrée unique vers vos fournisseurs (O
 ## Compilation
 
 ```
-go build -o P4Relay.exe ./cmd/p4relay
+build.bat
+```
+
+Sous Windows, `build.bat` produit une **application** : l'exécutable est lié en
+sous-système GUI, donc lancé au double-clic il n'ouvre **aucune fenêtre de
+commande** — seule l'interface apparaît. Lancé depuis un terminal, il y rattache
+sa console et y écrit ses messages (le bandeau, les erreurs).
+
+Sur les autres systèmes, la compilation reste la commande Go habituelle :
+
+```
+go build -o P4Relay ./cmd/p4relay
 ```
 
 ## Lancement
@@ -42,6 +53,11 @@ set P4RELAY_NO_WINDOW=1 & P4Relay.exe
 
 Pour forcer le navigateur classique plutôt que la fenêtre dédiée :
 `set P4RELAY_BROWSER=1`.
+
+Sous Windows, `P4Relay.exe` est une application : lancé au double-clic, il
+n'ouvre aucune fenêtre de commande. Si une erreur empêche le démarrage (port
+déjà utilisé, par exemple), elle s'affiche dans une boîte de dialogue plutôt que
+de disparaître en silence.
 
 ## Structure
 
